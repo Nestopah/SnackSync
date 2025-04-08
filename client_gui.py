@@ -15,6 +15,7 @@ class SnackSyncApp:
         self.root = root
         self.root.title("SnackSync - Login/Register")
         self.root.geometry("300x250")
+        self.center_window(root, 300,250)
 
         ctk.CTkLabel(root, text="Username:").pack(pady=5)
         self.username_CTkEntry = ctk.CTkEntry(root)
@@ -73,11 +74,17 @@ class SnackSyncApp:
         mainwin.geometry("500x600")
         self.center_window(mainwin,500,600)
 
-        conn = sqlite3.connect("snacks.db")
+        conn = sqlite3.connect("snacksync.db")
         cursor = conn.cursor()
         cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
-                            id INTEGER PRIMARY KEY, username TEXT, snack TEXT, 
-                            calories INTEGER, day INTEGER, month INTEGER, year INTEGER)''')
+            id INTEGER PRIMARY KEY,
+            username TEXT,
+            snack TEXT,
+            calories INTEGER,
+            day INTEGER,
+            month INTEGER,
+            year INTEGER
+        )''')
         conn.commit()
         conn.close()
 
@@ -124,7 +131,7 @@ class SnackSyncApp:
 
         day, month, year = int(self.day_var.get()), int(self.month_var.get()), int(self.year_var.get())
 
-        conn = sqlite3.connect("snacks.db")
+        conn = sqlite3.connect("snacksync.db")
         cursor = conn.cursor()
         cursor.execute("INSERT INTO snacks (username, snack, calories, day, month, year) VALUES (?, ?, ?, ?, ?, ?)",
                        (username, snack_name, calories, day, month, year))
@@ -153,7 +160,7 @@ class SnackSyncApp:
         year = self.year_var.get()
 
         # Delete from the database
-        conn = sqlite3.connect("snacks.db")
+        conn = sqlite3.connect("snacksync.db")
         cursor = conn.cursor()
         cursor.execute(
             "DELETE FROM snacks WHERE username=? AND snack=? AND calories=? AND day=? AND month=? AND year=?",
@@ -174,7 +181,7 @@ class SnackSyncApp:
 
         ctk.CTkLabel(statswin, text="All time calorie intake:").pack(pady=20)
 
-        conn = sqlite3.connect("snacks.db")
+        conn = sqlite3.connect("snacksync.db")
         cursor = conn.cursor()
 
         cursor.execute("SELECT day, month, year, SUM(calories) FROM snacks WHERE username=? GROUP BY day, month, year",
@@ -242,7 +249,7 @@ class SnackSyncApp:
 
 
     def update_total_calories(self, username):
-        conn = sqlite3.connect("snacks.db")
+        conn = sqlite3.connect("snacksync.db")
         cursor = conn.cursor()
         cursor.execute("SELECT SUM(calories) FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
                        (username, self.day_var.get(), self.month_var.get(), self.year_var.get()))
@@ -257,7 +264,7 @@ class SnackSyncApp:
     def display_snacks(self, username):
         self.snack_listbox.delete(0, ctk.END)
 
-        conn = sqlite3.connect("snacks.db")
+        conn = sqlite3.connect("snacksync.db")
         cursor = conn.cursor()
         cursor.execute("SELECT snack, calories FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
                        (username, self.day_var.get(), self.month_var.get(), self.year_var.get()))

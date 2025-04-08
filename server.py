@@ -10,12 +10,12 @@ server.bind((SERVER_HOST, SERVER_PORT))
 server.listen(5)
 print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
 
-conn = sqlite3.connect("users.db", check_same_thread=False)
+conn = sqlite3.connect("snacksync.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT UNIQUE, password TEXT)''')
 conn.commit()
 
-snack_conn = sqlite3.connect("snacks.db", check_same_thread=False)
+snack_conn = conn  # Use the same unified connection
 snack_cursor = snack_conn.cursor()
 snack_cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
                         id INTEGER PRIMARY KEY, username TEXT, snack TEXT, 
@@ -26,9 +26,13 @@ def authenticate_user(username, password):
     cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, password))
     return cursor.fetchone() is not None
 
-def register_user(username, password):
+def signup(username, password):
     try:
-        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+        Se
+        conn = sqlite3.connect('snacksync.db')
+        user = User('new_user', 'secure_password')
+        user.save_to_db(conn)
+        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
