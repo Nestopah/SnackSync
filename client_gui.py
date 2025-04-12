@@ -1,24 +1,15 @@
+
 import socket
+import sqlite3
 import customtkinter as ctk
 import tkinter as tk
 from tkinter  import messagebox
 from datetime import datetime
 from snack import Snack
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP
-import base64
-
-with open("rsa_public.pem", "rb") as f:
-    public_key = RSA.import_key(f.read())
-    rsa_cipher = PKCS1_OAEP.new(public_key)
-
-def rsa_encrypt_b64(data):
-    encrypted_data = rsa_cipher.encrypt(data.encode())
-    return base64.b64encode(encrypted_data).decode()
 
 
 SERVER_HOST = "127.0.0.1"
-SERVER_PORT = 50505
+SERVER_PORT = 12345
 
 class SnackSyncApp:
     def __init__(self, root):
@@ -49,12 +40,16 @@ class SnackSyncApp:
             client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             client.connect((SERVER_HOST, SERVER_PORT))
 
-            username = self.username_CTkEntry.get()
-            password = self.password_CTkEntry.get()
+            client.recv(1024)
+            client.send(option.encode())
 
-            # ✅ Send all login/register data in one go
-            combined = f"{option}\n{username}\n{password}\n"
-            client.sendall(combined.encode())
+            client.recv(1024)
+            username = self.username_CTkEntry.get()
+            client.send(username.encode())
+
+            client.recv(1024)
+            password = self.password_CTkEntry.get()
+            client.send(password.encode())
 
             response = client.recv(1024).decode()
             messagebox.showinfo("Server Response", response)
@@ -79,6 +74,20 @@ class SnackSyncApp:
         mainwin.title(f"SnackSync - Main window {username}")
         mainwin.geometry("500x600")
         self.center_window(mainwin,500,600)
+
+        conn = sqlite3.connect("snacksync.db")
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
+            id INTEGER PRIMARY KEY,
+            username TEXT,
+            snack TEXT,
+            calories INTEGER,
+            day INTEGER,
+            month INTEGER,
+            year INTEGER
+        )''')
+        conn.commit()
+        conn.close()
 
         ctk.CTkLabel(mainwin, text=f"Welcome, {username}!", font=("Arial", 24)).pack(pady=10)
 
@@ -119,37 +128,21 @@ class SnackSyncApp:
             messagebox.showerror("Error", "Please enter a valid snack and calorie amount.")
             return
 
+        calories = int(calories)
 
-        day, month, year = self.day_var.get(), self.month_var.get(), self.year_var.get()
+        day, month, year = int(self.day_var.get()), int(self.month_var.get()), int(self.year_var.get())
 
-        try:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect((SERVER_HOST, SERVER_PORT))
+        conn = sqlite3.connect("snacksync.db")
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO snacks (username, snack, calories, day, month, year) VALUES (?, ?, ?, ?, ?, ?)",
+                       (username, snack_name, calories, day, month, year))
+        conn.commit()
+        conn.close()
 
-            client.send(b"s")  # submit snack
-
-            client.send(username.encode())
-
-            # Encrypt and send snack info
-            client.send(rsa_encrypt_b64(snack_name).encode())
-            client.send(rsa_encrypt_b64(calories).encode())
-            client.send(rsa_encrypt_b64(day).encode())
-            client.send(rsa_encrypt_b64(month).encode())
-            client.send(rsa_encrypt_b64(year).encode())
-
-            # Receive server confirmation
-            response = client.recv(1024).decode()
-            messagebox.showinfo("Server Response", response)
-
-            client.close()
-
-            self.snack_CTkEntry.delete(0, ctk.END)
-            self.calories_CTkEntry.delete(0, ctk.END)
-            self.display_snacks(username)
-            self.update_total_calories(username)
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to log snack: {e}")
+        self.snack_listbox.insert(ctk.END, f"{snack_name}: {calories} kcal")
+        self.snack_CTkEntry.delete(0, ctk.END)
+        self.calories_CTkEntry.delete(0, ctk.END)
+        self.update_total_calories(username)
 
     def delete_selected_snack(self, username):
         selected = self.snack_listbox.curselection()
@@ -167,34 +160,16 @@ class SnackSyncApp:
         month = self.month_var.get()
         year = self.year_var.get()
 
-        try:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect((SERVER_HOST, SERVER_PORT))
-
-            client.send(b"d")  # delete snack
-
-            client.send(username.encode())
-
-            # Encrypt and send snack details
-            client.send(rsa_encrypt_b64(snack_name.strip()).encode())
-            client.send(rsa_encrypt_b64(str(calories)).encode())
-            client.send(rsa_encrypt_b64(day).encode())
-            client.send(rsa_encrypt_b64(month).encode())
-            client.send(rsa_encrypt_b64(year).encode())
-
-            # Receive response
-            response = client.recv(1024).decode()
-            messagebox.showinfo("Server Response", response)
-            client.close()
-
-            self.display_snacks(username)
-            self.update_total_calories(username)
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to delete snack: {e}")
-
+        # Delete from the database
+        conn = sqlite3.connect("snacksync.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM snacks WHERE username=? AND snack=? AND calories=? AND day=? AND month=? AND year=?",
+            (username, snack_name.strip(), calories, day, month, year)
+        )
+        conn.commit()
+        conn.close()
         self.display_snacks(username)
-
     def stats_window(self, username):
         statswin = ctk.CTkToplevel()
         statswin.title("Stats")
@@ -207,28 +182,23 @@ class SnackSyncApp:
 
         ctk.CTkLabel(statswin, text="All time calorie intake:").pack(pady=20)
 
-        try:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect((SERVER_HOST, SERVER_PORT))
+        conn = sqlite3.connect("snacksync.db")
+        cursor = conn.cursor()
 
-            client.send(b"t")  # new 't' = stats request
+        cursor.execute("SELECT day, month, year, SUM(calories) FROM snacks WHERE username=? GROUP BY day, month, year",
+                       (username,))
+        rows = cursor.fetchall()
+        conn.close()
 
-            client.send(username.encode())
+        if not rows:
+            ctk.CTkLabel(statswin, text="No data found.").pack(pady=10)
+            return
 
-            # Receive and split multiline string of stats
-            data = client.recv(4096).decode()  # allow larger buffer
-            if not data.strip():
-                ctk.CTkLabel(statswin, text="No data found.").pack(pady=10)
-                return
-
-            for line in data.strip().splitlines():
-                ctk.CTkLabel(statswin, text=line).pack(anchor="w", padx=20, pady=2)
-
-            client.close()
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to fetch stats: {e}")
-
+            # Show each date + total calories
+        for row in rows:
+            day, month, year, total = row
+            text = f"{day}/{month}/{year}: {total} kcal"
+            ctk.CTkLabel(statswin, text=text).pack(anchor="w", padx=20, pady=2)
     def log_prev_days_window(self, username):
         logdayswin = ctk.CTkToplevel()
         logdayswin.title("Log previous days")
@@ -277,65 +247,33 @@ class SnackSyncApp:
         self.display_snacks(username)
         self.update_total_calories(username)
 
+
+
     def update_total_calories(self, username):
-        day = self.day_var.get()
-        month = self.month_var.get()
-        year = self.year_var.get()
+        conn = sqlite3.connect("snacksync.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT SUM(calories) FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
+                       (username, self.day_var.get(), self.month_var.get(), self.year_var.get()))
+        total_calories = cursor.fetchone()[0]
+        conn.close()
 
-        try:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect((SERVER_HOST, SERVER_PORT))
+        if total_calories is None:
+            total_calories = 0
 
-            client.send(b"tc")  # "tc" = total calories
-
-            client.send(username.encode())
-
-            client.send(rsa_encrypt_b64(day).encode())
-            client.send(rsa_encrypt_b64(month).encode())
-            client.send(rsa_encrypt_b64(year).encode())
-
-            total = client.recv(1024).decode().strip()
-            if not total:
-                total = "0"
-
-            self.total_calories_CTkLabel.configure(text=f"Total Calories This Day: {total} kcal")
-
-            client.close()
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to update calories: {e}")
+        self.total_calories_CTkLabel.configure(text=f"Total Calories This Day: {total_calories} kcal")
 
     def display_snacks(self, username):
         self.snack_listbox.delete(0, ctk.END)
 
-        day = self.day_var.get()
-        month = self.month_var.get()
-        year = self.year_var.get()
+        conn = sqlite3.connect("snacksync.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT snack, calories FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
+                       (username, self.day_var.get(), self.month_var.get(), self.year_var.get()))
+        snacks = cursor.fetchall()
+        conn.close()
 
-        try:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect((SERVER_HOST, SERVER_PORT))
-
-            client.send(b"dp")
-
-            client.send(username.encode())
-
-            client.send(rsa_encrypt_b64(day).encode())
-            client.send(rsa_encrypt_b64(month).encode())
-            client.send(rsa_encrypt_b64(year).encode())
-
-            data = client.recv(4096).decode()
-            if not data.strip():
-                return
-
-            for line in data.strip().splitlines():
-                self.snack_listbox.insert(ctk.END, line)
-
-            client.close()
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load snacks: {e}")
-
+        for snack in snacks:
+            self.snack_listbox.insert(ctk.END, f"{snack[0]}: {snack[1]} kcal")
 
 if __name__ == "__main__":
     root = ctk.CTk()
