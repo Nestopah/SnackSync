@@ -1,12 +1,27 @@
 import socket
 import sqlite3
 import threading
+from user import User
+import bcrypt
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP
+import base64
 
-SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 12345
+with open("rsa_private.pem", "rb") as f:
+    private_key = RSA.import_key(f.read())
+    rsa_cipher = PKCS1_OAEP.new(private_key)
+
+def rsa_decrypt_b64(encoded_data):
+    encrypted_data = base64.b64decode(encoded_data)
+    return rsa_cipher.decrypt(encrypted_data).decode()
+
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 50505
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # ✅ allow re-binding to the same port
 server.bind((SERVER_HOST, SERVER_PORT))
+
 server.listen(5)
 print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
 
@@ -22,17 +37,47 @@ snack_cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
                         calories INTEGER, day INTEGER, month INTEGER, year INTEGER)''')
 snack_conn.commit()
 
-def authenticate_user(username, password):
-    cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, password))
-    return cursor.fetchone() is not None
+
+def login(username, entered_password):
+    # Get the user from the database (assume we fetch the user from the DB)
+    ###check
+    print("entered password = ", entered_password)
+    ###check
+    conn = sqlite3.connect('snacksync.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT password FROM users WHERE username = ?", (username,))
+    stored_hash = cursor.fetchone()
+
+    if stored_hash:
+        # stored_hash[0] is the hashed password from the database
+        stored_hash = stored_hash[0]
+
+        ###check
+        print("stored hash = ", stored_hash)
+        ###check
+
+        # Check if the entered password matches the stored hashed password
+        if bcrypt.checkpw(entered_password.encode(), stored_hash):
+            print("Login successful")
+            return True
+        else:
+            print("Invalid password")
+            return False
+    else:
+        print("User not found")
+        return False
+
 
 def signup(username, password):
     try:
-        Se
         conn = sqlite3.connect('snacksync.db')
-        user = User('new_user', 'secure_password')
+        user = User(username, password)
         user.save_to_db(conn)
-        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
+        ##check
+        print("password after hashing", user.password)
+        is_valid = user.check_password('my_secure_password')
+        print("Password is valid:", is_valid)
+        ## check
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -58,65 +103,104 @@ def delete_snack(username, snack, calories, day, month, year):
 
 def handle_client(client_socket):
     try:
-        client_socket.send(b"Do you want to (L)ogin, (R)egister, (S)ubmit Snack, or (D)elete Snack? ")
-        choice = client_socket.recv(1024).decode().strip().lower()
+        print("Connected to a new client")
 
-        client_socket.send(b"Enter username: ")
-        username = client_socket.recv(1024).decode().strip()
+        choice = client_socket.recv(1024).decode().strip().lower()
+        print("Received choice:", choice)
 
         if choice in ["l", "r"]:
-            client_socket.send(b"Enter password: ")
-            password = client_socket.recv(1024).decode().strip()
+            data = client_socket.recv(1024).decode().strip().splitlines()
+            username = data[0]
+            password = data[1]
+            print("Received username:", username)
+            print("Received password:", password)
 
             if choice == "l":
-                if authenticate_user(username, password):
+                if login(username, password):
                     client_socket.send(b"Login successful!\n")
                 else:
                     client_socket.send(b"Login failed!\n")
 
             elif choice == "r":
-                if register_user(username, password):
+                if signup(username, password):
                     client_socket.send(b"Registration successful! You can now log in.\n")
                 else:
                     client_socket.send(b"Username already exists. Try again.\n")
 
-        elif choice == "s":
-            client_socket.send(b"Enter snack name: ")
-            snack_name = client_socket.recv(1024).decode().strip()
+            return  # 🔒 don't continue after login/register
 
-            client_socket.send(b"Enter calories: ")
-            calories = int(client_socket.recv(1024).decode().strip())
+        # ✅ For all other commands, read username next
+        username = client_socket.recv(1024).decode().strip()
+        print("Username for action:", username)
 
-            client_socket.send(b"Enter day (DD): ")
-            day = int(client_socket.recv(1024).decode().strip())
+        if choice == "s":
+            snack = rsa_decrypt_b64(client_socket.recv(1024).decode().strip())
+            calories = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            day = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            month = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            year = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
 
-            client_socket.send(b"Enter month (MM): ")
-            month = int(client_socket.recv(1024).decode().strip())
+            snack_cursor.execute(
+                "INSERT INTO snacks (username, snack, calories, day, month, year) VALUES (?, ?, ?, ?, ?, ?)",
+                (username, snack, calories, day, month, year))
+            snack_conn.commit()
 
-            client_socket.send(b"Enter year (YYYY): ")
-            year = int(client_socket.recv(1024).decode().strip())
-
-            total_calories = add_snack(username, snack_name, calories, day, month, year)
-            client_socket.send(f"Snack added! Total Calories for {day}/{month}/{year}: {total_calories} kcal\n".encode())
+            total = get_total_calories(username, day, month, year)
+            client_socket.send(f"Snack added! Total Calories for {day}/{month}/{year}: {total} kcal\n".encode())
 
         elif choice == "d":
-            client_socket.send(b"Enter snack name to delete: ")
-            snack_name = client_socket.recv(1024).decode().strip()
-
-            client_socket.send(b"Enter calories: ")
-            calories = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter day (DD): ")
-            day = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter month (MM): ")
-            month = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter year (YYYY): ")
-            year = int(client_socket.recv(1024).decode().strip())
-
+            snack_name = rsa_decrypt_b64(client_socket.recv(1024).decode().strip())
+            calories = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            day = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            month = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            year = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
             total_calories = delete_snack(username, snack_name, calories, day, month, year)
-            client_socket.send(f"Snack deleted! Total Calories for {day}/{month}/{year}: {total_calories} kcal\n".encode())
+
+            client_socket.send(
+                f"Snack deleted! Total Calories for {day}/{month}/{year}: {total_calories} kcal\n".encode())
+
+        elif choice == "t":
+            snack_cursor.execute("""
+                SELECT day, month, year, SUM(calories)
+                FROM snacks
+                WHERE username = ?
+                GROUP BY day, month, year
+                ORDER BY year, month, day
+            """, (username,))
+            rows = snack_cursor.fetchall()
+
+            if not rows:
+                client_socket.send(b"")
+            else:
+                response_lines = [f"{day}/{month}/{year}: {total} kcal" for day, month, year, total in rows]
+                response = "\n".join(response_lines)
+                client_socket.send(response.encode())
+
+        elif choice == "dp":
+            day = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            month = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            year = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+
+            snack_cursor.execute("""
+                SELECT snack, calories FROM snacks
+                WHERE username = ? AND day = ? AND month = ? AND year = ?
+            """, (username, day, month, year))
+
+            snacks = snack_cursor.fetchall()
+
+            if not snacks:
+                client_socket.send(b"")
+            else:
+                response = "\n".join([f"{name}: {calories} kcal" for name, calories in snacks])
+                client_socket.send(response.encode())
+
+        elif choice == "tc":
+            day = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            month = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+            year = int(rsa_decrypt_b64(client_socket.recv(1024).decode().strip()))
+
+            total = get_total_calories(username, day, month, year)
+            client_socket.send(str(total).encode())
 
     except Exception as e:
         print(f"Error handling client: {e}")
@@ -131,3 +215,5 @@ def start_server():
         client_thread.start()
 
 start_server()
+
+### begrijp
