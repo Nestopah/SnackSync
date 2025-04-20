@@ -6,9 +6,10 @@ import tkinter as tk
 from tkinter  import messagebox
 from datetime import datetime
 from snack import Snack
+import time
 
 
-SERVER_HOST = "127.0.0.1"
+SERVER_HOST = "192.168.1.81"
 SERVER_PORT = 12345
 
 class SnackSyncApp:
@@ -37,22 +38,33 @@ class SnackSyncApp:
 
     def send_request(self, option):
         try:
+            print("[DEBUG] Connecting to server")
             client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             client.connect((SERVER_HOST, SERVER_PORT))
 
-            client.recv(1024)
-            client.send(option.encode())
+            if option == "l":
+                client.sendall(b"login")
+            elif option == "r":
+                client.sendall(b"register")
+            else:
+                print("[ERROR] Invalid option")
+                return
 
-            client.recv(1024)
+            # Wait for server acknowledgment before continuing
+            ack = client.recv(1024).decode()
+            print("[DEBUG] Server ack:", ack)
+
+            print("[DEBUG] Sent operation:", option)
+
             username = self.username_CTkEntry.get()
-            client.send(username.encode())
-
-            client.recv(1024)
             password = self.password_CTkEntry.get()
-            client.send(password.encode())
+
+            credentials = f"{username}|{password}"
+            client.send(credentials.encode())
 
             response = client.recv(1024).decode()
-            messagebox.showinfo("Server Response", response)
+            print("[DEBUG] Received from server:", response)
+            messagebox.showinfo("Server", response)
 
             client.close()
 
@@ -61,6 +73,9 @@ class SnackSyncApp:
 
         except ConnectionRefusedError:
             messagebox.showerror("Error", "Cannot connect to the server.")
+        except Exception as e:
+            print("[ERROR] Unexpected error:", e)
+            messagebox.showerror("Error", str(e))
 
     def center_window(self, window, width, height):
         screen_width = window.winfo_screenwidth()
@@ -132,12 +147,28 @@ class SnackSyncApp:
 
         day, month, year = int(self.day_var.get()), int(self.month_var.get()), int(self.year_var.get())
 
-        conn = sqlite3.connect("snacksync.db")
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO snacks (username, snack, calories, day, month, year) VALUES (?, ?, ?, ?, ?, ?)",
-                       (username, snack_name, calories, day, month, year))
-        conn.commit()
-        conn.close()
+        try:
+            print("[DEBUG] Connecting to server to log snack")
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.connect((SERVER_HOST, SERVER_PORT))
+
+            client.send(b"log_snack")
+            ack = client.recv(1024).decode()
+            print("[DEBUG] Server ack for log_snack:", ack)
+
+
+            data = f"{username}|{snack_name}|{calories}|{day}|{month}|{year}"
+            client.send(data.encode())
+            print("[DEBUG] Sent snack data:", data)
+
+            response = client.recv(1024).decode()
+            print("[DEBUG] Server response:", response)
+            messagebox.showinfo("Server", response)
+
+            client.close()
+        except Exception as e:
+            print("[ERROR] Failed to log snack:", e)
+            messagebox.showerror("Error", f"Failed to log snack: {e}")
 
         self.snack_listbox.insert(ctk.END, f"{snack_name}: {calories} kcal")
         self.snack_CTkEntry.delete(0, ctk.END)
@@ -150,26 +181,40 @@ class SnackSyncApp:
             messagebox.showwarning("No Selection", "Please select a snack to delete.")
             return
 
-        # Get the selected item text, like "Apple: 95 kcal"
         snack_text = self.snack_listbox.get(selected)
         snack_name, kcal_text = snack_text.split(":")
-        calories = int(kcal_text.strip().split()[0])  # Remove "kcal"
+        calories = int(kcal_text.strip().split()[0])
 
-        # Get selected date
-        day = self.day_var.get()
-        month = self.month_var.get()
-        year = self.year_var.get()
+        day = int(self.day_var.get())
+        month = int(self.month_var.get())
+        year = int(self.year_var.get())
 
-        # Delete from the database
-        conn = sqlite3.connect("snacksync.db")
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM snacks WHERE username=? AND snack=? AND calories=? AND day=? AND month=? AND year=?",
-            (username, snack_name.strip(), calories, day, month, year)
-        )
-        conn.commit()
-        conn.close()
-        self.display_snacks(username)
+        try:
+            print("[DEBUG] Connecting to server to delete snack")
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.connect((SERVER_HOST, SERVER_PORT))
+
+            client.send(b"delete_snack")
+            ack = client.recv(1024).decode()
+            print("[DEBUG] Server ack for delete_snack:", ack)
+
+            data = f"{username}|{snack_name.strip()}|{calories}|{day}|{month}|{year}"
+            client.send(data.encode())
+            print("[DEBUG] Sent snack to delete:", data)
+
+            response = client.recv(1024).decode()
+            print("[DEBUG] Server response:", response)
+            messagebox.showinfo("Server", response)
+
+            client.close()
+
+            self.display_snacks(username)
+            self.update_total_calories(username)
+
+        except Exception as e:
+            print("[ERROR] Failed to delete snack:", e)
+            messagebox.showerror("Error", f"Failed to delete snack: {e}")
+
     def stats_window(self, username):
         statswin = ctk.CTkToplevel()
         statswin.title("Stats")
@@ -247,33 +292,58 @@ class SnackSyncApp:
         self.display_snacks(username)
         self.update_total_calories(username)
 
-
-
     def update_total_calories(self, username):
-        conn = sqlite3.connect("snacksync.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT SUM(calories) FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
-                       (username, self.day_var.get(), self.month_var.get(), self.year_var.get()))
-        total_calories = cursor.fetchone()[0]
-        conn.close()
+        day = self.day_var.get()
+        month = self.month_var.get()
+        year = self.year_var.get()
 
-        if total_calories is None:
-            total_calories = 0
+        try:
+            print("[DEBUG] Connecting to server for total calories")
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.connect((SERVER_HOST, SERVER_PORT))
 
-        self.total_calories_CTkLabel.configure(text=f"Total Calories This Day: {total_calories} kcal")
+            full_command = f"get_total|{username}|{day}|{month}|{year}"
+            client.send(full_command.encode())
+            print("[DEBUG] Sent get_total data:", repr(full_command))
+
+            total = client.recv(1024).decode().strip()
+            print("[DEBUG] Received total:", repr(total))
+
+            self.total_calories_CTkLabel.configure(text=f"Total Calories This Day: {total} kcal")
+            client.close()
+
+        except Exception as e:
+            print("[ERROR] Failed to get total calories:", e)
+            messagebox.showerror("Error", f"Failed to update total: {e}")
 
     def display_snacks(self, username):
         self.snack_listbox.delete(0, ctk.END)
 
-        conn = sqlite3.connect("snacksync.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT snack, calories FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
-                       (username, self.day_var.get(), self.month_var.get(), self.year_var.get()))
-        snacks = cursor.fetchall()
-        conn.close()
+        day = self.day_var.get()
+        month = self.month_var.get()
+        year = self.year_var.get()
 
-        for snack in snacks:
-            self.snack_listbox.insert(ctk.END, f"{snack[0]}: {snack[1]} kcal")
+        try:
+            print("[DEBUG] Connecting to server to fetch snacks")
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.connect((SERVER_HOST, SERVER_PORT))
+
+            full_command = f"get_snacks|{username}|{day}|{month}|{year}"
+            client.send(full_command.encode())
+            print("[DEBUG] Sent full get_snacks command:", repr(full_command))
+
+            snack_list = client.recv(4096).decode()
+            print("[DEBUG] Server snack list:", repr(snack_list))
+
+            if snack_list:
+                for line in snack_list.strip().split("\n"):
+                    self.snack_listbox.insert(ctk.END, line)
+
+            client.close()
+        except Exception as e:
+            print("[ERROR] Failed to get snacks:", e)
+            messagebox.showerror("Error", f"Failed to load snacks: {e}")
+
 
 if __name__ == "__main__":
     root = ctk.CTk()

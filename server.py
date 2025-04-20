@@ -4,6 +4,7 @@ import sqlite3
 import threading
 from user import User
 import bcrypt
+import time
 
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 12345
@@ -91,70 +92,110 @@ def delete_snack(username, snack, calories, day, month, year):
 
 def handle_client(client_socket):
     try:
-        client_socket.send(b"Do you want to (L)ogin, (R)egister, (S)ubmit Snack, or (D)elete Snack? ")
-        choice = client_socket.recv(1024).decode().strip().lower()
+        data = client_socket.recv(1024).decode().strip()
+        if "|" in data:
+            parts = data.split("|")
+            op = parts[0]
+            args = parts[1:]
+        else:
+            op = data
+            args = []
 
-        client_socket.send(b"Enter username: ")
-        username = client_socket.recv(1024).decode().strip()
+        print("[DEBUG] Operation requested:", op)
+        # Only send ACK for old-style operations
+        if op in ["login", "register", "log_snack", "delete_snack"]:
+            client_socket.send(b"OK")
 
-        if choice in ["l", "r"]:
-            client_socket.send(b"Enter password: ")
-            password = client_socket.recv(1024).decode().strip()
+        if op == "login":
+            credentials = client_socket.recv(1024).decode().strip()
+            username, password = credentials.split("|")
+            print(f"[DEBUG] Login attempt for {username}")
 
-            if choice == "l":
-                if login(username, password):
-                    client_socket.send(b"Login successful!\n")
+            if login(username, password):
+                client_socket.send(b"Login successful!")
+            else:
+                client_socket.send(b"Login failed.")
+
+        elif op == "register":
+            credentials = client_socket.recv(1024).decode().strip()
+            username, password = credentials.split("|")
+            print(f"[DEBUG] Register attempt for {username}")
+
+            if signup(username, password):
+                client_socket.send(b"Registration successful!")
+            else:
+                client_socket.send(b"Username already exists.")
+
+        elif op == "log_snack":
+            data = client_socket.recv(1024).decode()
+            print("[DEBUG] Snack data:", data)
+            username, snack, calories, day, month, year = data.split("|")
+            total = add_snack(username, snack, int(calories), int(day), int(month), int(year))
+            response = f"Snack logged. Total calories: {total}"
+            client_socket.send(response.encode())
+        elif op == "delete_snack":
+            client_socket.send(b"OK")
+            data = client_socket.recv(1024).decode()
+            print("[DEBUG] Delete snack data:", data)
+
+            username, snack, calories, day, month, year = data.split("|")
+            calories = int(calories)
+            day = int(day)
+            month = int(month)
+            year = int(year)
+
+            total = delete_snack(username, snack, calories, day, month, year)
+            response = f"Snack deleted. New total: {total} kcal"
+            print("[DEBUG] Sending response:", response)
+            client_socket.send(response.encode())
+        elif op == "get_snacks":
+            try:
+                if len(args) == 4:
+                    username, day, month, year = args
+                    print(f"[DEBUG] Get snacks for {username} on {day}/{month}/{year}")
+                    snack_cursor.execute(
+                        "SELECT snack, calories FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
+                        (username, int(day), int(month), int(year)))
+                    rows = snack_cursor.fetchall()
+
+                    if not rows:
+                        client_socket.send(b"")
+                    else:
+                        formatted = "\n".join([f"{snack}: {calories} kcal" for snack, calories in rows])
+                        client_socket.send(formatted.encode())
                 else:
-                    client_socket.send(b"Login failed!\n")
+                    print("[ERROR] Invalid get_snacks args:", args)
+                    client_socket.send(b"")
+            except Exception as e:
+                print("[ERROR] Failed to process get_snacks:", e)
+                client_socket.send(b"")
 
-            elif choice == "r":
-                if signup(username, password):
-                    client_socket.send(b"Registration successful! You can now log in.\n")
+        elif op == "get_total":
+            try:
+                if len(args) == 4:
+                    username, day, month, year = args
+                    total = get_total_calories(username, int(day), int(month), int(year))
+                    print(f"[DEBUG] Total calculated for {username} on {day}/{month}/{year} = {total}")
+                    client_socket.send(str(total).encode())
+                    print(f"[DEBUG] Sent total: {total}")
                 else:
-                    client_socket.send(b"Username already exists. Try again.\n")
+                    print("[ERROR] Invalid get_total args:", args)
+                    client_socket.send(b"0")
+            except Exception as e:
+                print("[ERROR] Exception in get_total:", e)
+                client_socket.send(b"0")
 
-        elif choice == "s":
-            client_socket.send(b"Enter snack name: ")
-            snack_name = client_socket.recv(1024).decode().strip()
 
-            client_socket.send(b"Enter calories: ")
-            calories = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter day (DD): ")
-            day = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter month (MM): ")
-            month = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter year (YYYY): ")
-            year = int(client_socket.recv(1024).decode().strip())
-
-            total_calories = add_snack(username, snack_name, calories, day, month, year)
-            client_socket.send(f"Snack added! Total Calories for {day}/{month}/{year}: {total_calories} kcal\n".encode())
-
-        elif choice == "d":
-            client_socket.send(b"Enter snack name to delete: ")
-            snack_name = client_socket.recv(1024).decode().strip()
-
-            client_socket.send(b"Enter calories: ")
-            calories = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter day (DD): ")
-            day = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter month (MM): ")
-            month = int(client_socket.recv(1024).decode().strip())
-
-            client_socket.send(b"Enter year (YYYY): ")
-            year = int(client_socket.recv(1024).decode().strip())
-
-            total_calories = delete_snack(username, snack_name, calories, day, month, year)
-            client_socket.send(f"Snack deleted! Total Calories for {day}/{month}/{year}: {total_calories} kcal\n".encode())
+        else:
+            print("[ERROR] Unknown operation:", op)
+            client_socket.send(b"Unknown operation")
 
     except Exception as e:
-        print(f"Error handling client: {e}")
+        print("[ERROR] Exception in handle_client:", e)
+        client_socket.send(f"Error: {e}".encode())
     finally:
         client_socket.close()
+
 
 def start_server():
     print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
