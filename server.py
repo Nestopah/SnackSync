@@ -18,7 +18,7 @@ conn = sqlite3.connect("snacksync.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT UNIQUE, password TEXT)''')
 conn.commit()
-
+#
 snack_conn = conn  # Use the same unified connection
 snack_cursor = snack_conn.cursor()
 snack_cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
