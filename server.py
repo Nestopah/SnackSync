@@ -171,7 +171,7 @@ def handle_client(client_socket):
                 client_socket.send(b"")
 
         elif op == "get_total":
-            try:
+          try:
                 if len(args) == 4:
                     username, day, month, year = args
                     total = get_total_calories(username, int(day), int(month), int(year))
@@ -205,3 +205,4 @@ def start_server():
         client_thread.start()
 
 start_server()
+##
