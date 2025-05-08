@@ -7,6 +7,9 @@ from tkinter  import messagebox
 from datetime import datetime
 from snack import Snack
 import time
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP
+import base64
 
 
 SERVER_HOST = "192.168.1.81"
@@ -143,8 +146,6 @@ class SnackSyncApp:
             messagebox.showerror("Error", "Please enter a valid snack and calorie amount.")
             return
 
-        calories = int(calories)
-
         day, month, year = int(self.day_var.get()), int(self.month_var.get()), int(self.year_var.get())
 
         try:
@@ -156,9 +157,20 @@ class SnackSyncApp:
             ack = client.recv(1024).decode()
             print("[DEBUG] Server ack for log_snack:", ack)
 
+            # Load the server's public key (make sure server_public.pem is in the same dir or adjust path)
+            with open("rsa_public.pem", "rb") as f:
+                public_key = RSA.import_key(f.read())
 
-            data = f"{username}|{snack_name}|{calories}|{day}|{month}|{year}"
+            cipher_rsa = PKCS1_OAEP.new(public_key)
+
+            # Encrypt snack_name and calories
+            enc_snack = base64.b64encode(cipher_rsa.encrypt(snack_name.encode())).decode()
+            enc_calories = base64.b64encode(cipher_rsa.encrypt(str(calories).encode())).decode()
+
+            # Prepare the encrypted data message
+            data = f"{username}|{enc_snack}|{enc_calories}|{day}|{month}|{year}"
             client.send(data.encode())
+
             print("[DEBUG] Sent snack data:", data)
 
             response = client.recv(1024).decode()
@@ -349,4 +361,4 @@ if __name__ == "__main__":
     root = ctk.CTk()
     app = SnackSyncApp(root)
     root.mainloop()
-##gwahjigwahiogoaiwhgc
+##gwahjigwahiogoaiwhgcbssb

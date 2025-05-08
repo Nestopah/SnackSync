@@ -5,6 +5,9 @@ import threading
 from user import User
 import bcrypt
 import time
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP
+import base64
 
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 12345
@@ -129,8 +132,20 @@ def handle_client(client_socket):
         elif op == "log_snack":
             data = client_socket.recv(1024).decode()
             print("[DEBUG] Snack data:", data)
-            username, snack, calories, day, month, year = data.split("|")
-            total = add_snack(username, snack, int(calories), int(day), int(month), int(year))
+            # split incoming data
+            username, enc_snack, enc_calories, day, month, year = data.split("|")
+
+            # load private key
+            with open("rsa_private.pem", "rb") as f:
+                private_key = RSA.import_key(f.read())
+            cipher_rsa = PKCS1_OAEP.new(private_key)
+
+            # decrypt snack and calories
+            snack = cipher_rsa.decrypt(base64.b64decode(enc_snack)).decode()
+            calories = int(cipher_rsa.decrypt(base64.b64decode(enc_calories)).decode())
+
+            # insert to DB
+            total = add_snack(username, snack, calories, int(day), int(month), int(year))
             response = f"Snack logged. Total calories: {total}"
             client_socket.send(response.encode())
         elif op == "delete_snack":
@@ -181,7 +196,7 @@ def handle_client(client_socket):
                 else:
                     print("[ERROR] Invalid get_total args:", args)
                     client_socket.send(b"0")
-            except Exception as e:
+          except Exception as e:
                 print("[ERROR] Exception in get_total:", e)
                 client_socket.send(b"0")
 
