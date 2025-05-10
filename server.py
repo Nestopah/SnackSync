@@ -8,9 +8,16 @@ import time
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 import base64
+from CountryDetector import CountryDetector
+# Global tracker
+ip_access_log = {}  # {ip: [timestamps]}
+RATE_LIMIT_WINDOW = 5  # seconds
+MAX_CONNECTIONS = 10   # max connections per window
+all_conn_times = []
 
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 12345
+
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.bind((SERVER_HOST, SERVER_PORT))
@@ -58,7 +65,6 @@ def login(username, entered_password):
     else:
         print("User not found")
         return False
-
 
 def signup(username, password):
     try:
@@ -115,7 +121,24 @@ def handle_client(client_socket):
             print(f"[DEBUG] Login attempt for {username}")
 
             if login(username, password):
-                client_socket.send(b"Login successful!")
+                print("yogesh")
+                client_ip = client_socket.getpeername()[0]
+                country = CountryDetector(client_ip)
+
+                # You can now use:
+                print(f"[HILLEL] {username} logged in from {country.country} ({client_ip})")
+
+                # Optional custom action
+                country.respond()
+
+                # You can also conditionally block users:
+                if country.country == "Russia":
+                    client_socket.send(b"Access denied from your country.")
+                    return  # stops handling further
+
+                print(f"[HILLEL] {username} logged in from {country} ({client_ip})")
+                client_socket.send(b"Login successful.")
+
             else:
                 client_socket.send(b"Login failed.")
 
@@ -199,7 +222,26 @@ def handle_client(client_socket):
           except Exception as e:
                 print("[ERROR] Exception in get_total:", e)
                 client_socket.send(b"0")
-
+        elif op == "get_stats":
+            try:
+                if len(args) == 1:
+                    username = args[0]
+                    print(f"[DEBUG] Getting stats for {username}")
+                    snack_cursor.execute(
+                        "SELECT day, month, year, SUM(calories) FROM snacks WHERE username=? GROUP BY day, month, year",
+                        (username,))
+                    rows = snack_cursor.fetchall()
+                    if not rows:
+                        client_socket.send(b"")
+                    else:
+                        response = "\n".join([f"{day}/{month}/{year}:{total}" for day, month, year, total in rows])
+                        client_socket.send(response.encode())
+                else:
+                    print("[ERROR] Invalid get_stats args:", args)
+                    client_socket.send(b"")
+            except Exception as e:
+                print("[ERROR] Exception in get_stats:", e)
+                client_socket.send(b"")
 
         else:
             print("[ERROR] Unknown operation:", op)
@@ -210,14 +252,46 @@ def handle_client(client_socket):
         client_socket.send(f"Error: {e}".encode())
     finally:
         client_socket.close()
+def is_global_rate_safe():
+    now = time.time()
+    recent_connections = [t for t in all_conn_times if now - t < 5]
+    if len(recent_connections) >= 50:  # example threshold
+        return False
+    recent_connections.append(now)
+    all_conn_times[:] = recent_connections
+    return True
 
+def is_ip_allowed(ip):
+    now = time.time()
+    access_times = ip_access_log.get(ip, [])
+    access_times = [t for t in access_times if now - t < RATE_LIMIT_WINDOW]
+
+    if len(access_times) >= MAX_CONNECTIONS:
+        return False
+
+    access_times.append(now)
+    ip_access_log[ip] = access_times
+    return True
 
 def start_server():
     print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
     while True:
-        client_socket, _ = server.accept()
+        client_socket, addr = server.accept()
+        client_ip = addr[0]
+
+        if not is_ip_allowed(client_ip):
+            print(f"[DDoS BLOCKED] Too many connections from {client_ip}")
+            client_socket.close()
+            continue
+        if not is_global_rate_safe():
+            print("[DDoS BLOCKED] Too many total connections at once")
+            client_socket.close()
+            continue
         client_thread = threading.Thread(target=handle_client, args=(client_socket,))
         client_thread.start()
 
 start_server()
 ##
+
+
+

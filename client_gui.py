@@ -1,16 +1,17 @@
 
 import socket
-import sqlite3
 import customtkinter as ctk
 import tkinter as tk
 from tkinter  import messagebox
 from datetime import datetime
 from snack import Snack
+from snack import EncryptedSnack
 import time
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 import base64
-
+import threading
+from clippy import Clippy
 
 SERVER_HOST = "192.168.1.81"
 SERVER_PORT = 12345
@@ -80,34 +81,35 @@ class SnackSyncApp:
             print("[ERROR] Unexpected error:", e)
             messagebox.showerror("Error", str(e))
 
+
     def center_window(self, window, width, height):
         screen_width = window.winfo_screenwidth()
         screen_height = window.winfo_screenheight()
         x = (screen_width // 2) - (width // 2)
         y = (screen_height // 2) - (height // 2)
         window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def reminder_loop(self, interval_minutes=60):
+        def remind():
+            self.clippy.notification("SnackSync", "Don't forget to log your snacks!")
+            # Schedule the next reminder
+            threading.Timer(interval_minutes * 1, remind).start()
+
+        remind()  #first reminder
+
     def open_main_screen(self, username):
+        self.clippy = Clippy()  # Create Clippy once here
+        self.reminder_loop()  # Start reminders right after
         self.root.withdraw()  # hide the login window instead of destroy
         mainwin = ctk.CTkToplevel()  # this is like a new page
         mainwin.title(f"SnackSync - Main window {username}")
         mainwin.geometry("500x600")
         self.center_window(mainwin,500,600)
 
-        conn = sqlite3.connect("snacksync.db")
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
-            id INTEGER PRIMARY KEY,
-            username TEXT,
-            snack TEXT,
-            calories INTEGER,
-            day INTEGER,
-            month INTEGER,
-            year INTEGER
-        )''')
-        conn.commit()
-        conn.close()
+
 
         ctk.CTkLabel(mainwin, text=f"Welcome, {username}!", font=("Arial", 24)).pack(pady=10)
+
 
         self.day_var = ctk.StringVar(value=str(datetime.today().day))
         self.month_var = ctk.StringVar(value=str(datetime.today().month))
@@ -157,15 +159,9 @@ class SnackSyncApp:
             ack = client.recv(1024).decode()
             print("[DEBUG] Server ack for log_snack:", ack)
 
-            # Load the server's public key (make sure server_public.pem is in the same dir or adjust path)
-            with open("rsa_public.pem", "rb") as f:
-                public_key = RSA.import_key(f.read())
-
-            cipher_rsa = PKCS1_OAEP.new(public_key)
-
-            # Encrypt snack_name and calories
-            enc_snack = base64.b64encode(cipher_rsa.encrypt(snack_name.encode())).decode()
-            enc_calories = base64.b64encode(cipher_rsa.encrypt(str(calories).encode())).decode()
+            # Use EncryptedSnack to handle encryption
+            snack = EncryptedSnack(username, snack_name, int(calories), "rsa_public.pem")
+            enc_snack, enc_calories = snack.encrypt()
 
             # Prepare the encrypted data message
             data = f"{username}|{enc_snack}|{enc_calories}|{day}|{month}|{year}"
@@ -239,23 +235,22 @@ class SnackSyncApp:
 
         ctk.CTkLabel(statswin, text="All time calorie intake:").pack(pady=20)
 
-        conn = sqlite3.connect("snacksync.db")
-        cursor = conn.cursor()
+        try:
+            with socket.socket() as s:
+                s.connect((SERVER_HOST, SERVER_PORT))
+                s.send(f"get_stats|{username}".encode())
+                data = s.recv(4096).decode().strip()
+        except Exception as e:
+            ctk.CTkLabel(statswin, text=f"Error: {e}").pack(pady=10)
+            return
 
-        cursor.execute("SELECT day, month, year, SUM(calories) FROM snacks WHERE username=? GROUP BY day, month, year",
-                       (username,))
-        rows = cursor.fetchall()
-        conn.close()
-
-        if not rows:
+        if not data:
             ctk.CTkLabel(statswin, text="No data found.").pack(pady=10)
             return
 
-            # Show each date + total calories
-        for row in rows:
-            day, month, year, total = row
-            text = f"{day}/{month}/{year}: {total} kcal"
-            ctk.CTkLabel(statswin, text=text).pack(anchor="w", padx=20, pady=2)
+        for line in data.split("\n"):
+            ctk.CTkLabel(statswin, text=line + " kcal").pack(anchor="w", padx=20, pady=2)
+
     def log_prev_days_window(self, username):
         logdayswin = ctk.CTkToplevel()
         logdayswin.title("Log previous days")
