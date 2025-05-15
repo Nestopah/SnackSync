@@ -13,6 +13,7 @@ import base64
 import threading
 from clippy import Clippy
 
+
 SERVER_HOST = "192.168.1.81"
 SERVER_PORT = 12345
 
@@ -32,55 +33,125 @@ class SnackSyncApp:
         self.password_CTkEntry.pack(pady=5)
 
         ctk.CTkButton(root, text="Login", command=self.login).pack(pady=5)
-        ctk.CTkButton(root, text="Register", command=self.register).pack(pady=5)
+        ctk.CTkButton(root, text="Sign up", command=self.register).pack(pady=5)
 
     def login(self):
         self.send_request("l")
 
+    from Crypto.PublicKey import RSA
+    from Crypto.Cipher import PKCS1_OAEP
+    import base64
+
     def register(self):
-        self.send_request("r")
+        signup = ctk.CTkToplevel()
+        signup.title("Sign up")
+        signup.geometry("500x600")
+        self.center_window(signup, 500, 600)
 
-    def send_request(self, option):
-        try:
-            print("[DEBUG] Connecting to server")
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect((SERVER_HOST, SERVER_PORT))
+        ctk.CTkLabel(signup, text="Username:").pack(pady=5)
+        self.username_CTkEntry = ctk.CTkEntry(signup)
+        self.username_CTkEntry.pack(pady=5)
 
-            if option == "l":
-                client.sendall(b"login")
-            elif option == "r":
-                client.sendall(b"register")
-            else:
-                print("[ERROR] Invalid option")
+        ctk.CTkLabel(signup, text="Password:").pack(pady=5)
+        self.password_CTkEntry = ctk.CTkEntry(signup, show="*")
+        self.password_CTkEntry.pack(pady=5)
+
+        ctk.CTkLabel(signup, text="Email:").pack(pady=5)
+        self.email_CTkEntry = ctk.CTkEntry(signup)
+        self.email_CTkEntry.pack(pady=5)
+
+        def submit_signup():
+
+            username = self.username_CTkEntry.get().strip()
+            password = self.password_CTkEntry.get().strip()
+            email = self.email_CTkEntry.get().strip()
+
+            if not username or not password or not email:
+                messagebox.showerror("Error", "All fields are required.")
                 return
 
-            # Wait for server acknowledgment before continuing
-            ack = client.recv(1024).decode()
-            print("[DEBUG] Server ack:", ack)
+            if "@" not in email or "." not in email:
+                messagebox.showerror("Error", "Invalid email format.")
+                return
 
-            print("[DEBUG] Sent operation:", option)
+            # Load public key for RSA
+            try:
+                with open("rsa_public.pem", "rb") as f:
+                    key = RSA.import_key(f.read())
+                    cipher = PKCS1_OAEP.new(key)
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load public key:\n{e}")
+                return
 
-            username = self.username_CTkEntry.get()
-            password = self.password_CTkEntry.get()
+            # Encrypt fields
+            try:
+                encrypted_username = base64.b64encode(cipher.encrypt(username.encode())).decode()
+                encrypted_password = base64.b64encode(cipher.encrypt(password.encode())).decode()
+                encrypted_email = base64.b64encode(cipher.encrypt(email.encode())).decode()
 
-            credentials = f"{username}|{password}"
-            client.send(credentials.encode())
+                print("[DEBUG] Encrypted username:", encrypted_username)
+                print("[DEBUG] Encrypted password:", encrypted_password)
+                print("[DEBUG] Encrypted email:", encrypted_email)
+                print("[DEBUG] Total message length:",
+                len(f"register|{encrypted_username}|{encrypted_password}|{encrypted_email}"))
+            except Exception as e:
+                messagebox.showerror("Error", f"Encryption failed:\n{e}")
+                return
 
-            response = client.recv(1024).decode()
-            print("[DEBUG] Received from server:", response)
-            messagebox.showinfo("Server", response)
+            message = f"register|{encrypted_username}|{encrypted_password}|{encrypted_email}"
+            print("[DEBUG] Final message sending to server:", message)
+            #send to server
+            response = self.send_request(f"register|{encrypted_username}|{encrypted_password}|{encrypted_email}!END")
 
-            client.close()
+            if response == "2FA":
+                messagebox.showinfo("Verification", "Check your email for a 6-digit code.")
+                signup.destroy()
+                self.show_2fa_prompt(username)  # <- triggers 2FA prompt
+            elif response == "FAIL":
+                messagebox.showerror("Error", "Username or email already exists.")
+            else:
+                messagebox.showerror("Error", f"Unexpected response: {response}")
+        ctk.CTkButton(signup, text="Create Account", command=submit_signup).pack(pady=20)
 
-            if "successful" in response.lower():
+
+
+    def show_2fa_prompt(self, username):
+        win = ctk.CTkToplevel()
+        win.title("Two-Factor Authentication")
+        win.geometry("300x200")
+        self.center_window(win, 300, 200)
+
+        ctk.CTkLabel(win, text="Enter the 6-digit code sent to your email").pack(pady=10)
+        code_entry = ctk.CTkEntry(win)
+        code_entry.pack(pady=10)
+
+        def submit_code():
+            code = code_entry.get().strip()
+            if not code.isdigit() or len(code) != 6:
+                messagebox.showerror("Error", "Enter a valid 6-digit code.")
+                return
+
+            response = self.send_request(f"2fa|{username}|{code}")
+            if response == "OK":
+                messagebox.showinfo("Success", "Login successful.")
+                win.destroy()
                 self.open_main_screen(username)
+            else:
+                messagebox.showerror("Error", "Invalid or expired code.")
 
-        except ConnectionRefusedError:
-            messagebox.showerror("Error", "Cannot connect to the server.")
+        ctk.CTkButton(win, text="Verify", command=submit_code).pack(pady=10)
+
+    def send_request(self, message):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((SERVER_HOST, SERVER_PORT))
+            self.sock.sendall(message.encode())
+            response = self.sock.recv(1024).decode()
+            self.sock.close()
+            return response
         except Exception as e:
-            print("[ERROR] Unexpected error:", e)
-            messagebox.showerror("Error", str(e))
-
+            messagebox.showerror("Error", f"Server error: {e}")
+            return "FAIL"
 
     def center_window(self, window, width, height):
         screen_width = window.winfo_screenwidth()

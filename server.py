@@ -9,11 +9,15 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 import base64
 from CountryDetector import CountryDetector
+import smtplib
+import secrets
+
 # Global tracker
 ip_access_log = {}  # {ip: [timestamps]}
 RATE_LIMIT_WINDOW = 5  # seconds
 MAX_CONNECTIONS = 10   # max connections per window
 all_conn_times = []
+all_2fa_tokens = {}
 
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 12345
@@ -66,20 +70,49 @@ def login(username, entered_password):
         print("User not found")
         return False
 
-def signup(username, password):
+def decrypt_field(encrypted_base64):
+    with open("rsa_private.pem", "rb") as f:
+        key = RSA.import_key(f.read())
+        cipher = PKCS1_OAEP.new(key)
+    raw = base64.b64decode(encrypted_base64)
+    return cipher.decrypt(raw).decode()
+
+def send_email(to_email, code):
+    # VERY basic plain SMTP example — replace with your actual email creds
+    from_email = "latexdus@gmail.com"
+    password = "dsevptrpckqotgpq"
+
+    message = f"Subject: Your SnackSync Verification Code\n\nYour code is: {code}"
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(from_email, password)
+        server.sendmail(from_email, to_email, message)
+
+def signup(encrypted_username, encrypted_password, encrypted_email):
     try:
+        # Decrypt all fields
+        username = decrypt_field(encrypted_username)
+        password = decrypt_field(encrypted_password)
+        email = decrypt_field(encrypted_email)
+
+        # Create user and store
         conn = sqlite3.connect('snacksync.db')
-        user = User(username, password)
+        user = User(username, password, email)
         user.save_to_db(conn)
-        ##check
-        print("password after hashing", user.password)
-        is_valid = user.check_password('my_secure_password')
-        print("Password is valid:", is_valid)
-        ## check
         conn.commit()
-        return True
+
+        # Generate 6-digit 2FA token
+        code = ''.join(secrets.choice("0123456789") for _ in range(6))
+        all_2fa_tokens[username] = (code, time.time() + 300)  # expires in 5 mins
+
+        send_email(email, code)
+
+        return "2FA"  # tells client to open verification prompt
     except sqlite3.IntegrityError:
-        return False
+        return "FAIL"
+    except Exception as e:
+        print("Signup error:", e)
+        return "FAIL"
+
 
 def add_snack(username, snack, calories, day, month, year):
     snack_cursor.execute("INSERT INTO snacks (username, snack, calories, day, month, year) VALUES (?, ?, ?, ?, ?, ?)",
@@ -98,6 +131,17 @@ def delete_snack(username, snack, calories, day, month, year):
                          (username, snack, calories, day, month, year))
     snack_conn.commit()
     return get_total_calories(username, day, month, year)
+
+def recieve_data(sock):
+    data = b""
+    while True:
+        part = sock.recv(1024)
+        if not part:
+            break
+        data += part
+        if b"!END" in data:
+            break
+    return data.decode().replace("!END", "")
 
 def handle_client(client_socket):
     try:
@@ -142,15 +186,16 @@ def handle_client(client_socket):
             else:
                 client_socket.send(b"Login failed.")
 
-        elif op == "register":
-            credentials = client_socket.recv(1024).decode().strip()
-            username, password = credentials.split("|")
-            print(f"[DEBUG] Register attempt for {username}")
 
-            if signup(username, password):
-                client_socket.send(b"Registration successful!")
+        elif op == "register":
+            if len(args) == 3:
+                encrypted_username, encrypted_password, encrypted_email = args
+                result = signup(encrypted_username, encrypted_password, encrypted_email)
+                client_socket.send(result.encode())
+
             else:
-                client_socket.send(b"Username already exists.")
+                print("[ERROR] Invalid register args:", args)
+                client_socket.send(b"FAIL")
 
         elif op == "log_snack":
             data = client_socket.recv(1024).decode()
