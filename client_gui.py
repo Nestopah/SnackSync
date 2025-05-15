@@ -98,10 +98,10 @@ class SnackSyncApp:
                 messagebox.showerror("Error", f"Encryption failed:\n{e}")
                 return
 
-            message = f"register|{encrypted_username}|{encrypted_password}|{encrypted_email}"
+            message = f"register|{encrypted_username}|{encrypted_password}|{encrypted_email}!END"
             print("[DEBUG] Final message sending to server:", message)
             #send to server
-            response = self.send_request(f"register|{encrypted_username}|{encrypted_password}|{encrypted_email}!END")
+            response = self.send_request(message)
 
             if response == "2FA":
                 messagebox.showinfo("Verification", "Check your email for a 6-digit code.")
@@ -143,10 +143,12 @@ class SnackSyncApp:
 
     def send_request(self, message):
         try:
+            print("(DEBUG) send_request activated")
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((SERVER_HOST, SERVER_PORT))
             self.sock.sendall(message.encode())
             response = self.sock.recv(1024).decode()
+            print(f"response = {response} ")
             self.sock.close()
             return response
         except Exception as e:

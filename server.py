@@ -89,6 +89,7 @@ def send_email(to_email, code):
 
 def signup(encrypted_username, encrypted_password, encrypted_email):
     try:
+        print("(DEBUG) signing up")
         # Decrypt all fields
         username = decrypt_field(encrypted_username)
         password = decrypt_field(encrypted_password)
@@ -144,8 +145,10 @@ def recieve_data(sock):
     return data.decode().replace("!END", "")
 
 def handle_client(client_socket):
+    print("handle client activated")
     try:
-        data = client_socket.recv(1024).decode().strip()
+        data = recieve_data(client_socket)
+        print(f"data = {data}")
         if "|" in data:
             parts = data.split("|")
             op = parts[0]
