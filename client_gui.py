@@ -61,7 +61,6 @@ class SnackSyncApp:
         self.email_CTkEntry.pack(pady=5)
 
         def submit_signup():
-
             username = self.username_CTkEntry.get().strip()
             password = self.password_CTkEntry.get().strip()
             email = self.email_CTkEntry.get().strip()
@@ -131,7 +130,7 @@ class SnackSyncApp:
                 messagebox.showerror("Error", "Enter a valid 6-digit code.")
                 return
 
-            response = self.send_request(f"2fa|{username}|{code}")
+            response = self.send_request(f"2fa|{username}|{code}!END")
             if response == "OK":
                 messagebox.showinfo("Success", "Login successful.")
                 win.destroy()
@@ -169,6 +168,7 @@ class SnackSyncApp:
             threading.Timer(interval_minutes * 1, remind).start()
 
         remind()  #first reminder
+
 
     def open_main_screen(self, username):
         self.clippy = Clippy()  # Create Clippy once here

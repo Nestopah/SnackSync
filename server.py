@@ -11,6 +11,7 @@ import base64
 from CountryDetector import CountryDetector
 import smtplib
 import secrets
+from dbmanager import DBManager
 
 # Global tracker
 ip_access_log = {}  # {ip: [timestamps]}
@@ -28,38 +29,16 @@ server.bind((SERVER_HOST, SERVER_PORT))
 server.listen(5)
 print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
 
-conn = sqlite3.connect("snacksync.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT UNIQUE, password TEXT)''')
-conn.commit()
-#
-snack_conn = conn  # Use the same unified connection
-snack_cursor = snack_conn.cursor()
-snack_cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
-                        id INTEGER PRIMARY KEY, username TEXT, snack TEXT, 
-                        calories INTEGER, day INTEGER, month INTEGER, year INTEGER)''')
-snack_conn.commit()
+db = DBManager()
+
 
 
 def login(username, entered_password):
-    # Get the user from the database (assume we fetch the user from the DB)
-    ###check
-    print("entered password = ", entered_password)
-    ###check
-    conn = sqlite3.connect('snacksync.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT password FROM users WHERE username = ?", (username,))
-    stored_hash = cursor.fetchone()
+    print("entered password =", entered_password)
+    stored_hash = db.get_user_password(username)
 
     if stored_hash:
-        # stored_hash[0] is the hashed password from the database
-        stored_hash = stored_hash[0]
-
-        ###check
-        print("stored hash = ", stored_hash)
-        ###check
-
-        # Check if the entered password matches the stored hashed password
+        print("stored hash =", stored_hash)
         if bcrypt.checkpw(entered_password.encode(), stored_hash):
             print("Login successful")
             return True
@@ -70,6 +49,7 @@ def login(username, entered_password):
         print("User not found")
         return False
 
+
 def decrypt_field(encrypted_base64):
     with open("rsa_private.pem", "rb") as f:
         key = RSA.import_key(f.read())
@@ -79,6 +59,7 @@ def decrypt_field(encrypted_base64):
 
 def send_email(to_email, code):
     # VERY basic plain SMTP example — replace with your actual email creds
+    print("(DEBUG) send email activated")
     from_email = "latexdus@gmail.com"
     password = "dsevptrpckqotgpq"
 
@@ -89,24 +70,23 @@ def send_email(to_email, code):
 
 def signup(encrypted_username, encrypted_password, encrypted_email):
     try:
-        print("(DEBUG) signing up")
+        print("(DEBUG) sign  up activated")
         # Decrypt all fields
         username = decrypt_field(encrypted_username)
         password = decrypt_field(encrypted_password)
         email = decrypt_field(encrypted_email)
 
+        print(f"(DEBUG) decryp username: {username} decryp pass: {password} decryp email: {email}")
         # Create user and store
-        conn = sqlite3.connect('snacksync.db')
-        user = User(username, password, email)
-        user.save_to_db(conn)
-        conn.commit()
 
         # Generate 6-digit 2FA token
         code = ''.join(secrets.choice("0123456789") for _ in range(6))
         all_2fa_tokens[username] = (code, time.time() + 300)  # expires in 5 mins
 
-        send_email(email, code)
 
+        print("(DEBUG) Email sent tera")
+        send_email(email, code)
+        db.insert_user(username, password, email)
         return "2FA"  # tells client to open verification prompt
     except sqlite3.IntegrityError:
         return "FAIL"
@@ -116,22 +96,18 @@ def signup(encrypted_username, encrypted_password, encrypted_email):
 
 
 def add_snack(username, snack, calories, day, month, year):
-    snack_cursor.execute("INSERT INTO snacks (username, snack, calories, day, month, year) VALUES (?, ?, ?, ?, ?, ?)",
-                         (username, snack, calories, day, month, year))
-    snack_conn.commit()
-    return get_total_calories(username, day, month, year)
+    db.insert_snack(username, snack, calories, day, month, year)
+    return db.get_total_calories(username, day, month, year)
+
 
 def get_total_calories(username, day, month, year):
-    snack_cursor.execute("SELECT SUM(calories) FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
-                         (username, day, month, year))
-    total = snack_cursor.fetchone()[0]
-    return total if total else 0
+    return db.get_total_calories(username, day, month, year)
+
 
 def delete_snack(username, snack, calories, day, month, year):
-    snack_cursor.execute("DELETE FROM snacks WHERE rowid = (SELECT rowid FROM snacks WHERE username=? AND snack=? AND calories=? AND day=? AND month=? AND year=? LIMIT 1)",
-                         (username, snack, calories, day, month, year))
-    snack_conn.commit()
-    return get_total_calories(username, day, month, year)
+    db.delete_snack(username, snack, calories, day, month, year)
+    return db.get_total_calories(username, day, month, year)
+
 
 def recieve_data(sock):
     data = b""
@@ -159,7 +135,7 @@ def handle_client(client_socket):
 
         print("[DEBUG] Operation requested:", op)
         # Only send ACK for old-style operations
-        if op in ["login", "register", "log_snack", "delete_snack"]:
+        if op in ["log_snack", "delete_snack"]:
             client_socket.send(b"OK")
 
         if op == "login":
@@ -239,10 +215,7 @@ def handle_client(client_socket):
                 if len(args) == 4:
                     username, day, month, year = args
                     print(f"[DEBUG] Get snacks for {username} on {day}/{month}/{year}")
-                    snack_cursor.execute(
-                        "SELECT snack, calories FROM snacks WHERE username=? AND day=? AND month=? AND year=?",
-                        (username, int(day), int(month), int(year)))
-                    rows = snack_cursor.fetchall()
+                    rows = db.get_snacks(username, int(day), int(month), int(year))
 
                     if not rows:
                         client_socket.send(b"")
@@ -275,10 +248,7 @@ def handle_client(client_socket):
                 if len(args) == 1:
                     username = args[0]
                     print(f"[DEBUG] Getting stats for {username}")
-                    snack_cursor.execute(
-                        "SELECT day, month, year, SUM(calories) FROM snacks WHERE username=? GROUP BY day, month, year",
-                        (username,))
-                    rows = snack_cursor.fetchall()
+                    rows = db.get_stats(username)
                     if not rows:
                         client_socket.send(b"")
                     else:
@@ -290,7 +260,28 @@ def handle_client(client_socket):
             except Exception as e:
                 print("[ERROR] Exception in get_stats:", e)
                 client_socket.send(b"")
-
+        elif op == "2fa":
+            print(f"2fa args = {args}")
+            if len(args) == 2:
+                username, code = args
+                # Check if username is in tokens
+                if username in all_2fa_tokens:
+                    expected_code, expiry = all_2fa_tokens[username]
+                    current_time = time.time()
+                    if code == expected_code and current_time <= expiry:
+                        print(f"[DEBUG] 2FA success for {username}")
+                        # Optional: remove token now that it's used
+                        del all_2fa_tokens[username]
+                        client_socket.send(b"OK")
+                    else:
+                        print(f"[DEBUG] 2FA failed or expired for {username}")
+                        client_socket.send(b"FAIL")
+                else:
+                    print(f"[DEBUG] 2FA token not found for {username}")
+                    client_socket.send(b"FAIL")
+            else:
+                print("[ERROR] Invalid 2FA args:", args)
+                client_socket.send(b"FAIL")
         else:
             print("[ERROR] Unknown operation:", op)
             client_socket.send(b"Unknown operation")

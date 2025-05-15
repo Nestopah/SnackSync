@@ -13,9 +13,4 @@ class User:
         return bcrypt.checkpw(enteredpassword.encode(), self.password)
 
     def save_to_db(self, conn):
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO users (username, password, email) VALUES (?, ?, ?)",
-            (self.username, self.password, self.email)
-        )
-        conn.commit()
+        print("useless")
