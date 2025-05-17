@@ -39,6 +39,9 @@ def login(username, entered_password):
 
     if stored_hash:
         print("stored hash =", stored_hash)
+        if isinstance(stored_hash, str):
+            stored_hash = stored_hash.encode()  # 🔧 convert str to bytes
+
         if bcrypt.checkpw(entered_password.encode(), stored_hash):
             print("Login successful")
             return True
@@ -47,6 +50,21 @@ def login(username, entered_password):
             return False
     else:
         print("User not found")
+        return False
+def verify_2fa_code(username, submitted_code):
+    if username not in all_2fa_tokens:
+        print(f"[DEBUG] No 2FA token found for {username}")
+        return False
+
+    expected_code, expiry_time = all_2fa_tokens[username]
+    current_time = time.time()
+
+    if submitted_code == expected_code and current_time <= expiry_time:
+        print(f"[DEBUG] 2FA code valid for {username}")
+        del all_2fa_tokens[username]  # Remove token after use
+        return True
+    else:
+        print(f"[DEBUG] Invalid or expired 2FA code for {username}")
         return False
 
 
@@ -68,32 +86,39 @@ def send_email(to_email, code):
         server.login(from_email, password)
         server.sendmail(from_email, to_email, message)
 
+
 def signup(encrypted_username, encrypted_password, encrypted_email):
     try:
         print("(DEBUG) sign  up activated")
-        # Decrypt all fields
         username = decrypt_field(encrypted_username)
         password = decrypt_field(encrypted_password)
         email = decrypt_field(encrypted_email)
 
         print(f"(DEBUG) decryp username: {username} decryp pass: {password} decryp email: {email}")
-        # Create user and store
 
-        # Generate 6-digit 2FA token
+        # Step 2: Generate 2FA code
         code = ''.join(secrets.choice("0123456789") for _ in range(6))
-        all_2fa_tokens[username] = (code, time.time() + 300)  # expires in 5 mins
+        all_2fa_tokens[username] = (code, time.time() + 300)
 
-
+        # Step 3: Send the email immediately (slow, but necessary)
         print("(DEBUG) Email sent tera")
         send_email(email, code)
-        db.insert_user(username, password, email)
-        return "2FA"  # tells client to open verification prompt
+
+        # Step 4: Do the hashing + DB insert in a background thread
+        def add_user():
+            try:
+                hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+                db.insert_user(username, hashed_password, email)
+            except Exception as e:
+                print(f"[ERROR] adding user failed")
+
+        threading.Thread(target=add_user).start()
+        return "2FA"
     except sqlite3.IntegrityError:
         return "FAIL"
     except Exception as e:
         print("Signup error:", e)
         return "FAIL"
-
 
 def add_snack(username, snack, calories, day, month, year):
     db.insert_snack(username, snack, calories, day, month, year)
@@ -135,36 +160,31 @@ def handle_client(client_socket):
 
         print("[DEBUG] Operation requested:", op)
         # Only send ACK for old-style operations
-        if op in ["log_snack", "delete_snack"]:
-            client_socket.send(b"OK")
 
         if op == "login":
-            credentials = client_socket.recv(1024).decode().strip()
-            username, password = credentials.split("|")
-            print(f"[DEBUG] Login attempt for {username}")
+            if len(parts) == 3:
+                username = parts[1]
+                password = parts[2]
+                if login(username, password):
+                    # Check if 2FA is enabled
+                    if db.get_2fa(username) == 1:
+                        print("[DEBUG] 2FA is enabled, sending code")
 
-            if login(username, password):
-                print("yogesh")
-                client_ip = client_socket.getpeername()[0]
-                country = CountryDetector(client_ip)
-
-                # You can now use:
-                print(f"[HILLEL] {username} logged in from {country.country} ({client_ip})")
-
-                # Optional custom action
-                country.respond()
-
-                # You can also conditionally block users:
-                if country.country == "Russia":
-                    client_socket.send(b"Access denied from your country.")
-                    return  # stops handling further
-
-                print(f"[HILLEL] {username} logged in from {country} ({client_ip})")
-                client_socket.send(b"Login successful.")
-
+                        email = db.get_email(username)
+                        if email:
+                            code = ''.join(secrets.choice("0123456789") for _ in range(6))
+                            all_2fa_tokens[username] = (code, time.time() + 300)
+                            send_email(email, code)
+                            client_socket.send(b"2FA")  # tell client to expect prompt
+                        else:
+                            print("[ERROR] No email found for user during 2FA")
+                            client_socket.send(b"FAIL")
+                    else:
+                        client_socket.send(b"Login successful.")
+                else:
+                    client_socket.send(b"Login failed.")
             else:
-                client_socket.send(b"Login failed.")
-
+                client_socket.send(b"FAIL")
 
         elif op == "register":
             if len(args) == 3:
@@ -176,25 +196,30 @@ def handle_client(client_socket):
                 print("[ERROR] Invalid register args:", args)
                 client_socket.send(b"FAIL")
 
+
         elif op == "log_snack":
-            data = client_socket.recv(1024).decode()
-            print("[DEBUG] Snack data:", data)
-            # split incoming data
-            username, enc_snack, enc_calories, day, month, year = data.split("|")
+            if len(args) == 6:
+                username, enc_snack, enc_calories, day, month, year = args
+                print("[DEBUG] Snack data received")
+                try:
+                    with open("rsa_private.pem", "rb") as f:
+                        private_key = RSA.import_key(f.read())
+                        cipher_rsa = PKCS1_OAEP.new(private_key)
+                        username = cipher_rsa.decrypt(base64.b64decode(username)).decode()
+                        snack = cipher_rsa.decrypt(base64.b64decode(enc_snack)).decode()
+                        calories = int(cipher_rsa.decrypt(base64.b64decode(enc_calories)).decode())
+                        add_snack(username, snack, calories, int(day), int(month), int(year))
+                        client_socket.send(b"OK")
+                        print("log_snack sent ok")
+                except Exception as e:
+                    print(f"[ERROR] log_snack failed: {e}")
+                    client_socket.send(b"FAIL")
 
-            # load private key
-            with open("rsa_private.pem", "rb") as f:
-                private_key = RSA.import_key(f.read())
-            cipher_rsa = PKCS1_OAEP.new(private_key)
+            else:
+                print("[ERROR] Invalid log_snack args:", args)
+                client_socket.send(b"FAIL")
 
-            # decrypt snack and calories
-            snack = cipher_rsa.decrypt(base64.b64decode(enc_snack)).decode()
-            calories = int(cipher_rsa.decrypt(base64.b64decode(enc_calories)).decode())
 
-            # insert to DB
-            total = add_snack(username, snack, calories, int(day), int(month), int(year))
-            response = f"Snack logged. Total calories: {total}"
-            client_socket.send(response.encode())
         elif op == "delete_snack":
             client_socket.send(b"OK")
             data = client_socket.recv(1024).decode()
@@ -218,16 +243,16 @@ def handle_client(client_socket):
                     rows = db.get_snacks(username, int(day), int(month), int(year))
 
                     if not rows:
-                        client_socket.send(b"")
+                        client_socket.send(b"NONE")  # <== FIX: send non-empty response
                     else:
                         formatted = "\n".join([f"{snack}: {calories} kcal" for snack, calories in rows])
                         client_socket.send(formatted.encode())
                 else:
                     print("[ERROR] Invalid get_snacks args:", args)
-                    client_socket.send(b"")
+                    client_socket.send(b"FAIL")  # <== also better than empty
             except Exception as e:
                 print("[ERROR] Failed to process get_snacks:", e)
-                client_socket.send(b"")
+                client_socket.send(b"FAIL")
 
         elif op == "get_total":
           try:
@@ -260,28 +285,62 @@ def handle_client(client_socket):
             except Exception as e:
                 print("[ERROR] Exception in get_stats:", e)
                 client_socket.send(b"")
-        elif op == "2fa":
-            print(f"2fa args = {args}")
+        elif op == "get_2fa":
+            if len(args) == 1:
+                username = args[0]
+                try:
+                    result = db.get_2fa(username)
+                    client_socket.send(str(result).encode())
+                except Exception as e:
+                    print("[ERROR] get_2fa failed:", e)
+                    client_socket.send(b"0")
+            else:
+                client_socket.send(b"0")
+
+        elif op == "update_2fa":
             if len(args) == 2:
-                username, code = args
-                # Check if username is in tokens
-                if username in all_2fa_tokens:
-                    expected_code, expiry = all_2fa_tokens[username]
-                    current_time = time.time()
-                    if code == expected_code and current_time <= expiry:
-                        print(f"[DEBUG] 2FA success for {username}")
-                        # Optional: remove token now that it's used
-                        del all_2fa_tokens[username]
-                        client_socket.send(b"OK")
-                    else:
-                        print(f"[DEBUG] 2FA failed or expired for {username}")
-                        client_socket.send(b"FAIL")
-                else:
-                    print(f"[DEBUG] 2FA token not found for {username}")
+                username, value = args
+                try:
+                    db.update_2fa(username, value)
+                    client_socket.send(b"OK")
+                except Exception as e:
+                    print("[ERROR] update_2fa failed:", e)
                     client_socket.send(b"FAIL")
             else:
-                print("[ERROR] Invalid 2FA args:", args)
                 client_socket.send(b"FAIL")
+        elif op == "2fa":
+            if len(args) == 2:
+                username, code = args
+                if verify_2fa_code(username, code):
+                    client_socket.send(b"OK")
+                else:
+                    client_socket.send(b"FAIL")
+            else:
+                client_socket.send(b"FAIL")
+        elif op == "reset_pass":
+            if len(args) == 2:
+                enc_user_id, hashed_password = args
+
+                try:
+                    user_id = decrypt_field(enc_user_id)
+                    print(f"[DEBUG] Decrypted user_id: {user_id}")
+
+                    updated = db.update_user_password(user_id, hashed_password)
+
+                    if updated:
+                        print(f"[DEBUG] Password updated for {user_id}")
+                        client_socket.send(b"OK")
+                    else:
+                        print(f"[ERROR] No matching user for {user_id}")
+                        client_socket.send(b"FAIL")
+
+                except Exception as e:
+                    print(f"[ERROR] reset_pass failed: {e}")
+                    client_socket.send(b"FAIL")
+            else:
+                print("[ERROR] Invalid reset_pass args:", args)
+                client_socket.send(b"FAIL")
+
         else:
             print("[ERROR] Unknown operation:", op)
             client_socket.send(b"Unknown operation")

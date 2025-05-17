@@ -3,16 +3,15 @@ import sqlite3
 conn = sqlite3.connect("snacksync.db")
 cursor = conn.cursor()
 
-try:
-    cursor.execute("ALTER TABLE users ADD COLUMN email TEXT")
-except sqlite3.OperationalError:
-    # Column already exists
-    pass
+cursor.execute("DROP TABLE IF EXISTS users")
+
+
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE users (
     username TEXT PRIMARY KEY,
     password TEXT,
-    email TEXT
+    email TEXT,
+    enable_2fa INTEGER DEFAULT 0
 )
 """)
 

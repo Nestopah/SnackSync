@@ -1,4 +1,4 @@
-from win10toast import ToastNotifier
+from win10toast_click import ToastNotifier
 
 class Clippy:
     def __init__(self):
