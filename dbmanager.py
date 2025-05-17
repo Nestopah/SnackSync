@@ -1,5 +1,6 @@
 import sqlite3
 import time
+import os
 
 class DBManager:
     def __init__(self, db_name="snacksync.db"):
@@ -7,38 +8,46 @@ class DBManager:
         self.init_db()
 
     def init_db(self):
-        print("[DB] init_db start")
         start = time.time()
         with sqlite3.connect(self.db_name, timeout=5) as conn:
             cursor = conn.cursor()
             cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-                                username TEXT UNIQUE, password TEXT, email TEXT)''')
-            cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
-                                id INTEGER PRIMARY KEY, username TEXT, snack TEXT,
-                                calories INTEGER, day INTEGER, month INTEGER, year INTEGER)''')
-            conn.commit()
-        print(f"[DB] init_db end (took {time.time() - start:.3f} sec)")
+                                username TEXT UNIQUE,
+                                password TEXT,
+                                email TEXT,
+                                enable_2fa INTEGER DEFAULT 0)''')
 
-    def insert_user(self, username, password, email, retries=5):
-        print(f"[DB] insert_user start for {username}")
-        start = time.time()
-        while retries > 0:
-            try:
-                with sqlite3.connect(self.db_name, timeout=5) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT INTO users (username, password, email) VALUES (?, ?, ?)",
-                                   (username, password, email))
-                    conn.commit()
-                print(f"[DB] insert_user end for {username} (took {time.time() - start:.3f} sec)")
-                return
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
-                    print(f"[DB] insert_user retry due to locked DB, retries left: {retries}")
-                    time.sleep(0.2)  # Wait 100 ms before retry
-                    retries -= 1
-                else:
-                    raise
-        raise Exception(f"Could not insert user {username}, DB locked after retries")
+            cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
+                                id INTEGER PRIMARY KEY,
+                                username TEXT,
+                                snack TEXT,
+                                calories INTEGER,
+                                day INTEGER,
+                                month INTEGER,
+                                year INTEGER)''')
+
+            cursor.execute('''CREATE TABLE IF NOT EXISTS goals (
+                                username TEXT,
+                                goal_calories INTEGER,
+                                goal_type INTEGER,
+                                day INTEGER,
+                                month INTEGER,
+                                year INTEGER)''')
+
+            conn.commit()
+        print(f"[DB] Database created (took {time.time() - start:.3f} sec)")
+
+    def insert_user(self, username, password, email):
+        try:
+            with sqlite3.connect(self.db_name, timeout=5) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''INSERT INTO users (username, password, email)
+                                  VALUES (?, ?, ?)''',
+                               (username, password, email))
+                conn.commit()
+        except sqlite3.OperationalError as e:
+            print("[DB ERROR] insert_user:", e)
+            raise
 
     def get_user_password(self, username):
         print(f"[DB] get_user_password start for {username}")
@@ -55,7 +64,7 @@ class DBManager:
             cursor = conn.cursor()
             cursor.execute("SELECT enable_2fa FROM users WHERE username = ?", (username,))
             result = cursor.fetchone()
-            return result[0] if result else 0  # default to 0 if not found
+            return result[0] if result else 0
 
     def update_2fa(self, username, value):
         with sqlite3.connect(self.db_name, timeout=5) as conn:
@@ -74,13 +83,11 @@ class DBManager:
         try:
             with sqlite3.connect(self.db_name, timeout=5) as conn:
                 cursor = conn.cursor()
-                # Try updating by username first
                 cursor.execute("UPDATE users SET password = ? WHERE username = ?", (new_password, identifier))
                 if cursor.rowcount == 0:
-                    # If not found, try updating by email
                     cursor.execute("UPDATE users SET password = ? WHERE email = ?", (new_password, identifier))
                 conn.commit()
-                return cursor.rowcount > 0  # True if a row was updated
+                return cursor.rowcount > 0
         except Exception as e:
             print("[DB ERROR] update_user_password:", e)
             return False
@@ -119,4 +126,45 @@ class DBManager:
                               GROUP BY year, month, day
                               ORDER BY year DESC, month DESC, day DESC''',
                            (username,))
-            return cursor.fetchall()
+            return cursor.fetchall()  # goal now fetched per-day elsewhere
+
+    def update_goals(self, username, goal_calories, goal_type, day, month, year):
+        with sqlite3.connect(self.db_name, timeout=5) as conn:
+            cursor = conn.cursor()
+            # Delete existing goal entry for that day
+            cursor.execute('''DELETE FROM goals 
+                              WHERE username = ? AND day = ? AND month = ? AND year = ?''',
+                           (username, day, month, year))
+            # Insert the new goal
+            cursor.execute('''INSERT INTO goals (username, goal_calories, goal_type, day, month, year)
+                              VALUES (?, ?, ?, ?, ?, ?)''',
+                           (username, goal_calories, goal_type, day, month, year))
+            conn.commit()
+
+    def get_goal_for_date(self, username, day, month, year):
+        with sqlite3.connect(self.db_name, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT goal_calories, goal_type FROM goals
+                WHERE username = ?
+                AND (year < ? OR (year = ? AND month < ?) OR (year = ? AND month = ? AND day <= ?))
+                ORDER BY year DESC, month DESC, day DESC
+                LIMIT 1
+            ''', (username, year, year, month, year, month, day))
+            return cursor.fetchone()
+
+    def delete_snack(self, username, snack, calories, day, month, year):
+        with sqlite3.connect(self.db_name, timeout=5) as conn:
+            cursor = conn.cursor()
+
+            # Step 1: Get one matching rowid
+            cursor.execute('''
+                SELECT rowid FROM snacks
+                WHERE username = ? AND snack = ? AND calories = ?
+                AND day = ? AND month = ? AND year = ?
+            ''', (username, snack, calories, day, month, year))
+            result = cursor.fetchone()
+            if result:
+                rowid = result[0]
+                cursor.execute('DELETE FROM snacks WHERE rowid = ?', (rowid,))
+                conn.commit()

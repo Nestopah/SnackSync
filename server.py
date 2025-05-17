@@ -220,21 +220,22 @@ def handle_client(client_socket):
                 client_socket.send(b"FAIL")
 
 
+
         elif op == "delete_snack":
-            client_socket.send(b"OK")
-            data = client_socket.recv(1024).decode()
-            print("[DEBUG] Delete snack data:", data)
-
-            username, snack, calories, day, month, year = data.split("|")
-            calories = int(calories)
-            day = int(day)
-            month = int(month)
-            year = int(year)
-
-            total = delete_snack(username, snack, calories, day, month, year)
-            response = f"Snack deleted. New total: {total} kcal"
-            print("[DEBUG] Sending response:", response)
-            client_socket.send(response.encode())
+            try:
+                if len(args) == 6:
+                    username, snack, calories, day, month, year = args
+                    print(f"[DEBUG] Deleting snack for {username}: {snack}, {calories} kcal on {day}/{month}/{year}")
+                    calories = int(calories)
+                    day, month, year = int(day), int(month), int(year)
+                    delete_snack(username, snack, calories, day, month, year)
+                    client_socket.send(b"OK")
+                else:
+                    print("[ERROR] Invalid delete_snack args:", args)
+                    client_socket.send(b"FAIL")
+            except Exception as e:
+                print("[ERROR] delete_snack failed:", e)
+                client_socket.send(b"FAIL")
         elif op == "get_snacks":
             try:
                 if len(args) == 4:
@@ -275,16 +276,26 @@ def handle_client(client_socket):
                     print(f"[DEBUG] Getting stats for {username}")
                     rows = db.get_stats(username)
                     if not rows:
-                        client_socket.send(b"")
-                    else:
-                        response = "\n".join([f"{day}/{month}/{year}:{total}" for day, month, year, total in rows])
-                        client_socket.send(response.encode())
+                        client_socket.send(b"NONE")
+                        return
+                    result_lines = []
+                    for day, month, year, total in rows:
+                        goal = db.get_goal_for_date(username, day, month, year)
+                        if goal:
+                            gcal, gtype = goal
+                            result_lines.append(f"{day}/{month}/{year}:{total}|{gcal}|{gtype}")
+                        else:
+                            result_lines.append(f"{day}/{month}/{year}:{total}||")  # no goal set
+                    payload = "\n".join(result_lines)
+                    client_socket.send(payload.encode())
                 else:
                     print("[ERROR] Invalid get_stats args:", args)
-                    client_socket.send(b"")
+                    client_socket.send(b"FAIL")
             except Exception as e:
                 print("[ERROR] Exception in get_stats:", e)
-                client_socket.send(b"")
+                client_socket.send(b"FAIL")
+
+
         elif op == "get_2fa":
             if len(args) == 1:
                 username = args[0]
@@ -308,31 +319,30 @@ def handle_client(client_socket):
                     client_socket.send(b"FAIL")
             else:
                 client_socket.send(b"FAIL")
-        elif op == "2fa":
-            if len(args) == 2:
-                username, code = args
-                if verify_2fa_code(username, code):
-                    client_socket.send(b"OK")
-                else:
-                    client_socket.send(b"FAIL")
-            else:
-                client_socket.send(b"FAIL")
         elif op == "reset_pass":
             if len(args) == 2:
                 enc_user_id, hashed_password = args
-
                 try:
                     user_id = decrypt_field(enc_user_id)
                     print(f"[DEBUG] Decrypted user_id: {user_id}")
 
-                    updated = db.update_user_password(user_id, hashed_password)
-
-                    if updated:
-                        print(f"[DEBUG] Password updated for {user_id}")
-                        client_socket.send(b"OK")
+                    # Always require 2FA for password reset
+                    email = db.get_email(user_id)
+                    if email:
+                        try:
+                            code = ''.join(secrets.choice("0123456789") for _ in range(6))
+                            all_2fa_tokens[user_id] = (code, time.time() + 300)
+                            send_email(email, code)
+                            client_socket.send(b"2FA")  # tell client to prompt for code
+                            return
+                        except Exception as e:
+                            print(f"[ERROR] Failed to send 2FA email for reset_pass: {e}")
+                            client_socket.send(b"FAIL")
+                            return
                     else:
-                        print(f"[ERROR] No matching user for {user_id}")
+                        print("[ERROR] No email found for reset_pass")
                         client_socket.send(b"FAIL")
+                        return
 
                 except Exception as e:
                     print(f"[ERROR] reset_pass failed: {e}")
@@ -340,6 +350,65 @@ def handle_client(client_socket):
             else:
                 print("[ERROR] Invalid reset_pass args:", args)
                 client_socket.send(b"FAIL")
+        elif op == "reset_verify":
+            if len(args) == 3:
+                user_id, new_password, submitted_code = args
+                if verify_2fa_code(user_id, submitted_code):
+                    updated = db.update_user_password(user_id, new_password)
+                    if updated:
+                        print(f"[DEBUG] Password reset via 2FA for {user_id}")
+                        client_socket.send(b"OK")
+                    else:
+                        print(f"[ERROR] Password update failed for {user_id}")
+                        client_socket.send(b"FAIL")
+                else:
+                    print("[ERROR] Invalid or expired 2FA code for reset_confirm")
+                    client_socket.send(b"FAIL")
+            else:
+                client_socket.send(b"FAIL")
+
+        elif op == "update_goal":
+            if len(args) == 6:
+                try:
+                    enc_username, enc_cal, enc_type, day, month, year = args
+                    username = decrypt_field(enc_username)
+                    goal_calories = int(decrypt_field(enc_cal))
+                    goal_type = int(decrypt_field(enc_type))
+                    day, month, year = int(day), int(month), int(year)
+
+                    db.update_goals(username, goal_calories, goal_type, day, month, year)
+                    client_socket.send(b"OK")
+                except Exception as e:
+                    print("[ERROR] update_goal failed:", e)
+                    client_socket.send(b"error")
+            else:
+                print("[ERROR] Invalid update_goal args:", args)
+                client_socket.send(b"error")
+
+        elif op == "get_goal":
+            if len(args) == 1:
+                try:
+                    encrypted_username = args[0]
+                    username = decrypt_field(encrypted_username)
+
+                    now = time.localtime()
+                    day, month, year = now.tm_mday, now.tm_mon, now.tm_year
+
+                    result = db.get_goal_for_date(username, day, month, year)
+
+                    if result:
+                        goal_calories, goal_type = result
+                        response = f"{goal_calories}|{goal_type}"
+                    else:
+                        response = "|"
+
+                    client_socket.send(response.encode())
+                except Exception as e:
+                    print("[ERROR] get_goal failed:", e)
+                    client_socket.send(b"error")
+            else:
+                print("[ERROR] Invalid get_goal args:", args)
+                client_socket.send(b"error")
 
         else:
             print("[ERROR] Unknown operation:", op)

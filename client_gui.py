@@ -157,7 +157,7 @@ class SnackSyncApp:
                 return
 
             if newpass:
-                message = f"reset_confirm|{username}|{newpass}|{code}!END"
+                message = f"reset_verify|{username}|{newpass}|{code}!END"
             else:
                 message = f"2fa|{username}|{code}!END"
 
@@ -225,16 +225,20 @@ class SnackSyncApp:
             message = f"reset_pass|{encrypted_user_id}|{hashed_password}!END"
             print("[DEBUG] Sending reset message:", message)
 
-            response = self.send_request(message)
+            response = self.send_request(message).strip()
+
             if response == "OK":
                 self.root.after(0, lambda: [
                     messagebox.showinfo("Success", "Password reset successful!"),
                     self.open_main_screen(user_id)
                 ])
+            elif response == "2FA":
+                self.root.after(0, lambda: self.show_2fa_prompt(user_id, newpass=hashed_password))
             else:
                 self.root.after(0, lambda: messagebox.showerror("Error", response))
 
-        ctk.CTkButton(self.root, text="Reset Password",command=lambda: threading.Thread(target=send_and_handle).start()).pack(pady=10)
+        ctk.CTkButton(self.root, text="Reset Password",
+                      command=lambda: threading.Thread(target=send_and_handle).start()).pack(pady=10)
 
     def center_window(self, window, width, height):
         screen_width = window.winfo_screenwidth()
@@ -301,32 +305,108 @@ class SnackSyncApp:
 
     def open_settings(self, username):
         self.clear_root()
-
         self.root.title("Settings")
-        self.root.geometry("300x200")
-        self.center_window(self.root, 300, 200)
+        self.root.geometry("300x400")
+        self.center_window(self.root, 300, 400)
 
         ctk.CTkLabel(self.root, text="Settings", font=("Arial", 18)).pack(pady=10)
 
+        # --- 2FA toggle ---
         var = tk.BooleanVar()
 
         def fetch_current_2fa():
-            current = self.send_request(f"get_2fa|{username}!END")
-            var.set(current == "1")
+            encrypted_username = User.encrypt_rsa(username)
+            response = self.send_request(f"get_2fa|{encrypted_username}!END")
+            var.set(response == "1")
 
         threading.Thread(target=fetch_current_2fa).start()
-
-        def on_toggle():
-            def update_settings():
-                new_value = 1 if var.get() else 0
-                self.send_request(f"update_2fa|{username}|{new_value}!END")
-                messagebox.showinfo("Settings Updated", "To apply settings, please restart the app.")
-                return -999 #windows error otherwise
-            threading.Thread(target=update_settings).start()
-
-        toggle = ctk.CTkCheckBox(self.root, text="Enable 2FA", variable=var, command=on_toggle)
+        toggle = ctk.CTkCheckBox(self.root, text="Enable 2FA", variable=var)
         toggle.pack(pady=10)
-        ctk.CTkButton(self.root, text="Back to main menu", command=lambda: self.open_main_screen(username)).pack(pady=20)
+
+        # --- Goal input ---
+        ctk.CTkLabel(self.root, text="Daily Calorie Goal:").pack()
+        goal_entry = ctk.CTkEntry(self.root)
+        goal_entry.pack(pady=5)
+
+        selected_type = tk.IntVar(value=-1)
+
+        def update_button_styles():
+            under_btn.configure(
+                fg_color="#1E90FF" if selected_type.get() == 0 else "#ADD8E6",
+                text_color="black"
+            )
+            over_btn.configure(
+                fg_color="#1E90FF" if selected_type.get() == 1 else "#ADD8E6",
+                text_color="black"
+            )
+
+        def select_under():
+            selected_type.set(0)
+            update_button_styles()
+
+        def select_over():
+            selected_type.set(1)
+            update_button_styles()
+
+        under_btn = ctk.CTkButton(
+            self.root, text="Stay under calorie goal", command=select_under,
+            fg_color="#ADD8E6", border_color="black", border_width=2, text_color="black", hover_color="#ADD8E6"
+        )
+        under_btn.pack(pady=5)
+
+        over_btn = ctk.CTkButton(
+            self.root, text="Stay over calorie goal", command=select_over,
+            fg_color="#ADD8E6", border_color="black", border_width=2, text_color="black", hover_color="#ADD8E6"
+        )
+        over_btn.pack(pady=5)
+
+        def fetch_goal_info():
+            encrypted_username = User.encrypt_rsa(username)
+            response = self.send_request(f"get_goal|{encrypted_username}!END")
+            if response and "|" in response:
+                cal, gtype = response.split("|")
+                if cal.isdigit():
+                    goal_entry.insert(0, cal)
+                if gtype in ("0", "1"):
+                    selected_type.set(int(gtype))
+                    update_button_styles()
+
+        threading.Thread(target=fetch_goal_info).start()
+
+        # --- Save button ---
+        def save_all():
+            new_2fa = 1 if var.get() else 0
+            calories = goal_entry.get().strip()
+            goal_type = selected_type.get()
+
+
+            if not calories.isdigit():
+                messagebox.showerror("Invalid Input", "Please enter a numeric goal.")
+                return
+            if goal_type not in (0, 1):
+                messagebox.showerror("Missing Selection", "Please select a goal type.")
+                return
+
+            now = datetime.now()
+            day, month, year = str(now.day), str(now.month), str(now.year)
+
+            encrypted_username = User.encrypt_rsa(username)
+            encrypted_calories = User.encrypt_rsa(calories)
+            encrypted_goal_type = User.encrypt_rsa(str(goal_type))
+            encrypted_2fa = User.encrypt_rsa(str(new_2fa))
+            print(f"[DEBUG] Sending goal update: calories={calories}, type={goal_type}, 2FA={new_2fa}")
+
+            def threaded_save():
+                self.send_request(
+                    f"update_goal|{encrypted_username}|{encrypted_calories}|{encrypted_goal_type}|{day}|{month}|{year}!END")
+                self.send_request(f"update_2fa|{encrypted_username}|{encrypted_2fa}!END")
+                messagebox.showinfo("Saved", "Settings updated successfully.")
+
+            threading.Thread(target=threaded_save).start()
+
+        ctk.CTkButton(self.root, text="Save", command=save_all).pack(pady=10)
+        ctk.CTkButton(self.root, text="Back to main menu", command=lambda: self.open_main_screen(username)).pack(
+            pady=10)
 
     def log_snack(self, username):
         snack_name = self.snack_CTkEntry.get().strip()
@@ -361,30 +441,20 @@ class SnackSyncApp:
                 def safe_gui_update():
                     try:
                         self.display_snacks(username)
-                    except Exception as e:
-                        print("[CRASH] display_snacks failed:", e)
-
-                    try:
                         self.update_total_calories(username)
-                    except Exception as e:
-                        print("[CRASH] update_total_calories failed:", e)
-
-                    try:
                         self.snack_CTkEntry.delete(0, ctk.END)
-                    except Exception as e:
-                        print("[CRASH] snack_CTkEntry delete failed:", e)
-
-                    try:
                         self.calories_CTkEntry.delete(0, ctk.END)
+                        print("Snack logged successfully.")
+                        now = datetime.now()
+                        if day == now.day and month == now.month and year == now.year:
+                            self.clippy.notify_goal_result(username)
+                        else:
+                            print("(DEBUG) snack logged with log prev days function no need to show notification")
                     except Exception as e:
-                        print("[CRASH] calories_CTkEntry delete failed:", e)
-
-                    try:
-                        messagebox.showinfo("Success", "Snack logged successfully.")
-                    except Exception as e:
-                        print("[CRASH] messagebox failed:", e)
+                        print("[ERROR] safe_gui_update crash:", e)
 
                 self.root.after(0, safe_gui_update)
+
             except Exception as e:
                 print("[ERROR] Failed to log snack:", e)
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to log snack: {e}"))
@@ -401,35 +471,29 @@ class SnackSyncApp:
         snack_name, kcal_text = snack_text.split(":")
         calories = int(kcal_text.strip().split()[0])
 
-        day = int(self.day_var.get())
-        month = int(self.month_var.get())
-        year = int(self.year_var.get())
+        day = self.day_var.get()
+        month = self.month_var.get()
+        year = self.year_var.get()
 
-        try:
-            print("[DEBUG] Connecting to server to delete snack")
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect((SERVER_HOST, SERVER_PORT))
+        def send_delete():
+            try:
+                message = f"delete_snack|{username}|{snack_name.strip()}|{calories}|{day}|{month}|{year}!END"
+                print("[DEBUG] Sending delete message:", message)
+                response = self.send_request(message).strip()
 
-            client.send(b"delete_snack")
-            ack = client.recv(1024).decode()
-            print("[DEBUG] Server ack for delete_snack:", ack)
+                if response == "OK":
+                    self.root.after(0, lambda: [
+                        messagebox.showinfo("Deleted", "Snack deleted successfully."),
+                        self.display_snacks(username),
+                        self.update_total_calories(username)
+                    ])
+                else:
+                    self.root.after(0, lambda: messagebox.showerror("Error", "Snack deletion failed."))
+            except Exception as e:
+                print("[ERROR] Failed to delete snack:", e)
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to delete snack: {e}"))
 
-            data = f"{username}|{snack_name.strip()}|{calories}|{day}|{month}|{year}"
-            client.send(data.encode())
-            print("[DEBUG] Sent snack to delete:", data)
-
-            response = client.recv(1024).decode()
-            print("[DEBUG] Server response:", response)
-            messagebox.showinfo("Server", response)
-
-            client.close()
-
-            self.display_snacks(username)
-            self.update_total_calories(username)
-
-        except Exception as e:
-            print("[ERROR] Failed to delete snack:", e)
-            messagebox.showerror("Error", f"Failed to delete snack: {e}")
+        threading.Thread(target=send_delete).start()
 
     def stats_window(self, username):
         statswin = ctk.CTkToplevel()
@@ -441,23 +505,76 @@ class SnackSyncApp:
         statswin.attributes("-topmost", True)
         statswin.after(100, lambda: statswin.attributes("-topmost", False))
 
-        ctk.CTkLabel(statswin, text="All time calorie intake:").pack(pady=20)
+        ctk.CTkLabel(statswin, text="All time calorie intake:").pack(pady=10)
+        loading_label = ctk.CTkLabel(statswin, text="Loading...")
+        loading_label.pack()
 
-        try:
-            with socket.socket() as s:
-                s.connect((SERVER_HOST, SERVER_PORT))
-                s.send(f"get_stats|{username}".encode())
-                data = s.recv(4096).decode().strip()
-        except Exception as e:
-            ctk.CTkLabel(statswin, text=f"Error: {e}").pack(pady=10)
-            return
+        def fetch_stats():
+            try:
+                response = self.send_request(f"get_stats|{username}!END")
+            except Exception as e:
+                self.root.after(0, lambda: loading_label.configure(text=f"Error: {e}"))
+                return
 
-        if not data:
-            ctk.CTkLabel(statswin, text="No data found.").pack(pady=10)
-            return
+            if not response or response == "NONE":
+                self.root.after(0, lambda: loading_label.configure(text="No data found."))
+                return
 
-        for line in data.split("\n"):
-            ctk.CTkLabel(statswin, text=line + " kcal").pack(anchor="w", padx=20, pady=2)
+            lines = response.strip().split("\n")
+            total_days = 0
+            goal_hits = 0
+
+            def show_stats():
+                loading_label.destroy()
+                goal_hits = 0
+                total_days = 0
+
+                for line in lines:
+                    if ":" not in line:
+                        continue
+
+                    try:
+                        date_part, rest = line.split(":", 1)
+                        parts = rest.split("|", 2)
+
+                        total_str = parts[0].strip()
+                        gcal = parts[1].strip() if len(parts) > 1 else ""
+                        gtype = parts[2].strip() if len(parts) > 2 else ""
+
+                        text = f"{date_part}: {total_str} kcal"
+
+                        if gcal.isdigit() and gtype in ("0", "1"):
+                            total_val = int(total_str)
+                            goal_val = int(gcal)
+                            goal_type= int(gtype)
+
+                            typetera = "under" if goal_type == 0 else "over"
+                            goal_text = f"(goal was {typetera} {goal_val})"
+
+                            goal_succeed = (goal_type == 1 and total_val >= goal_val) or \
+                                       (goal_type == 0 and total_val <= goal_val)
+
+                            if goal_succeed:
+                                text += f"  | Goal reached: Yes {goal_text}"
+                                goal_hits += 1
+                            else:
+                                text += f"  | Goal reached: No {goal_text}"
+
+                            total_days += 1
+                        else:
+                            text += "  | No goal set"
+
+                        ctk.CTkLabel(statswin, text=text).pack(anchor="w", padx=10, pady=2)
+
+                    except Exception as e:
+                        print("[ERROR] Failed to parse stats line:", line, e)
+
+                if total_days > 0:
+                    summary = f"You reached your goal {goal_hits} out of {total_days} days."
+                    ctk.CTkLabel(statswin, text=summary, font=("Arial", 12)).pack(pady=10)
+            self.root.after(0, show_stats)
+
+        threading.Thread(target=fetch_stats).start()
 
     def log_prev_days_window(self, username):
         logdayswin = ctk.CTkToplevel()
