@@ -15,7 +15,8 @@ class DBManager:
                                 username TEXT UNIQUE,
                                 password TEXT,
                                 email TEXT,
-                                enable_2fa INTEGER DEFAULT 0)''')
+                                enable_2fa INTEGER DEFAULT 0,
+                                clippy_interval INTEGER DEFAULT 60)''')
 
             cursor.execute('''CREATE TABLE IF NOT EXISTS snacks (
                                 id INTEGER PRIMARY KEY,
@@ -126,7 +127,7 @@ class DBManager:
                               GROUP BY year, month, day
                               ORDER BY year DESC, month DESC, day DESC''',
                            (username,))
-            return cursor.fetchall()  # goal now fetched per-day elsewhere
+            return cursor.fetchall()
 
     def update_goals(self, username, goal_calories, goal_type, day, month, year):
         with sqlite3.connect(self.db_name, timeout=5) as conn:
@@ -168,3 +169,16 @@ class DBManager:
                 rowid = result[0]
                 cursor.execute('DELETE FROM snacks WHERE rowid = ?', (rowid,))
                 conn.commit()
+
+    def update_interval(self, username, interval_minutes):
+        with sqlite3.connect(self.db_name, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET clippy_interval = ? WHERE username = ?", (interval_minutes, username))
+            conn.commit()
+
+    def get_interval(self, username):
+        with sqlite3.connect(self.db_name, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT clippy_interval FROM users WHERE username = ?", (username,))
+            result = cursor.fetchone()
+            return result[0] if result and result[0] is not None else 60  # default to 60 minutes

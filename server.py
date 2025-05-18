@@ -96,7 +96,7 @@ def signup(encrypted_username, encrypted_password, encrypted_email):
 
         print(f"(DEBUG) decryp username: {username} decryp pass: {password} decryp email: {email}")
 
-        # Step 2: Generate 2FA code
+        # generate code for 2fa
         code = ''.join(secrets.choice("0123456789") for _ in range(6))
         all_2fa_tokens[username] = (code, time.time() + 300)
 
@@ -274,12 +274,12 @@ def handle_client(client_socket):
                 if len(args) == 1:
                     username = args[0]
                     print(f"[DEBUG] Getting stats for {username}")
-                    rows = db.get_stats(username)
-                    if not rows:
+                    history = db.get_stats(username) #all user snack history for all days
+                    if not history:
                         client_socket.send(b"NONE")
                         return
                     result_lines = []
-                    for day, month, year, total in rows:
+                    for day, month, year, total in history:
                         goal = db.get_goal_for_date(username, day, month, year)
                         if goal:
                             gcal, gtype = goal
@@ -325,8 +325,6 @@ def handle_client(client_socket):
                 try:
                     user_id = decrypt_field(enc_user_id)
                     print(f"[DEBUG] Decrypted user_id: {user_id}")
-
-                    # Always require 2FA for password reset
                     email = db.get_email(user_id)
                     if email:
                         try:
@@ -372,7 +370,8 @@ def handle_client(client_socket):
                 try:
                     enc_username, enc_cal, enc_type, day, month, year = args
                     username = decrypt_field(enc_username)
-                    goal_calories = int(decrypt_field(enc_cal))
+                    goal_cal_str = decrypt_field(enc_cal)
+                    goal_calories = int(goal_cal_str) #rsa is string
                     goal_type = int(decrypt_field(enc_type))
                     day, month, year = int(day), int(month), int(year)
 
@@ -407,32 +406,57 @@ def handle_client(client_socket):
                     print("[ERROR] get_goal failed:", e)
                     client_socket.send(b"error")
             else:
-                print("[ERROR] Invalid get_goal args:", args)
-                client_socket.send(b"error")
+                print("[ERROR] Invalid get_goal arguments", args)
+                client_socket.send(b"error")  #TODO FIX TIHS FUNCTION TO TAKE DATE ARGUMENTS YOGESH
+        elif op == "get_clippy_interval":
+            if len(args) == 1:
+                username = args[0]
+                try:
+                    interval = db.get_interval(username)
+                    client_socket.send(str(interval).encode())
+                except Exception as e:
+                    print("[ERROR] get_clippy_interval failed:", e)
+                    client_socket.send(b"60")  # default fallback
+            else:
+                client_socket.send(b"60")
+
+        elif op == "update_clippy_interval":
+            if len(args) == 2:
+                username = args[0]
+                try:
+                    new_interval = int(args[1])
+                    db.update_interval(username, new_interval)
+                    client_socket.send(b"OK")
+                except Exception as e:
+                    print("[ERROR] update_clippy_interval failed:", e)
+                    client_socket.send(b"FAIL")
+            else:
+                client_socket.send(b"FAIL")
+
 
         else:
-            print("[ERROR] Unknown operation:", op)
+            print("[ERROR] error with if op == ")
             client_socket.send(b"Unknown operation")
 
     except Exception as e:
-        print("[ERROR] Exception in handle_client:", e)
+        print("[ERROR] error in handle_client:", e)
         client_socket.send(f"Error: {e}".encode())
     finally:
         client_socket.close()
-def is_global_rate_safe():
+
+def detect_multiple_ip_ddos(): #ddos protection if there are too many users logging in at the same time
     now = time.time()
     recent_connections = [t for t in all_conn_times if now - t < 5]
-    if len(recent_connections) >= 50:  # example threshold
+    if len(recent_connections) >= 50:  # unrealistic for it to reach 50 connections for such a small app
         return False
     recent_connections.append(now)
     all_conn_times[:] = recent_connections
     return True
 
-def is_ip_allowed(ip):
+def detect_single_ip_ddos(ip): #ddos protection from one users logging in too many times in a short time frame
     now = time.time()
     access_times = ip_access_log.get(ip, [])
     access_times = [t for t in access_times if now - t < RATE_LIMIT_WINDOW]
-
     if len(access_times) >= MAX_CONNECTIONS:
         return False
 
@@ -443,15 +467,15 @@ def is_ip_allowed(ip):
 def start_server():
     print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
     while True:
-        client_socket, addr = server.accept()
-        client_ip = addr[0]
+        client_socket, address = server.accept()
+        client_ip = address[0]
 
-        if not is_ip_allowed(client_ip):
-            print(f"[DDoS BLOCKED] Too many connections from {client_ip}")
+        if not detect_single_ip_ddos(client_ip):
+            print(f"Too many connections from {client_ip}")
             client_socket.close()
             continue
-        if not is_global_rate_safe():
-            print("[DDoS BLOCKED] Too many total connections at once")
+        if not detect_multiple_ip_ddos():
+            print("Too many total connections at once")
             client_socket.close()
             continue
         client_thread = threading.Thread(target=handle_client, args=(client_socket,))

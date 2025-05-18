@@ -209,36 +209,33 @@ class SnackSyncApp:
             if not user_id or not password or not confirm:
                 self.root.after(0, lambda: messagebox.showerror("Error", "All fields required."))
                 return
-
             if password != confirm:
                 self.root.after(0, lambda: messagebox.showerror("Error", "Passwords do not match."))
                 return
-
             try:
-                user = User(user_id, password, "placeholder")
+                user = User(user_id, password, "yogesh no need")
                 encrypted_user_id = user.rsa_username
                 hashed_password = user.password.decode()
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Encryption or hashing failed: {e}"))
+                self.root.after(0, lambda: messagebox.showerror("Error"))
+                print("send and handle didnt work")
                 return
 
             message = f"reset_pass|{encrypted_user_id}|{hashed_password}!END"
-            print("[DEBUG] Sending reset message:", message)
+            print("Sending reset message:", message)
 
             response = self.send_request(message).strip()
 
             if response == "OK":
                 self.root.after(0, lambda: [
                     messagebox.showinfo("Success", "Password reset successful!"),
-                    self.open_main_screen(user_id)
-                ])
+                    self.open_main_screen(user_id)])
             elif response == "2FA":
                 self.root.after(0, lambda: self.show_2fa_prompt(user_id, newpass=hashed_password))
             else:
                 self.root.after(0, lambda: messagebox.showerror("Error", response))
 
-        ctk.CTkButton(self.root, text="Reset Password",
-                      command=lambda: threading.Thread(target=send_and_handle).start()).pack(pady=10)
+        ctk.CTkButton(self.root, text="Reset Password",command=lambda: threading.Thread(target=send_and_handle).start()).pack(pady=10)
 
     def center_window(self, window, width, height):
         screen_width = window.winfo_screenwidth()
@@ -247,13 +244,18 @@ class SnackSyncApp:
         y = (screen_height // 2) - (height // 2)
         window.geometry(f"{width}x{height}+{x}+{y}")
 
-    def reminder_loop(self, interval_minutes=60):
-        def remind():
+    def reminder_loop(self, interval_minutes):
+        try:
+            self.clippy_timer.cancel() #ignore warning it gets pass later
+        except AttributeError:
+            pass
+        def loop():
             self.clippy.notification("SnackSync", "Don't forget to log your snacks!")
-            # Schedule the next reminder
-            threading.Timer(interval_minutes * 1, remind).start()
+            self.clippy_timer = threading.Timer(interval_minutes * 60, loop)
+            self.clippy_timer.start()
 
-        remind()  #first reminder
+        self.clippy_timer = threading.Timer(interval_minutes * 60, loop)
+        self.clippy_timer.start()
 
     def clear_root(self):
         for widget in self.root.winfo_children():
@@ -267,7 +269,7 @@ class SnackSyncApp:
         self.center_window(self.root, 500, 600)
 
         self.clippy = Clippy()
-        self.root.after(1000, self.reminder_loop)
+        self.fetch_clippy_interval(username)  # start reminder loop
 
         # Now add all the main screen widgets directly to self.root
         ctk.CTkLabel(self.root, text=f"Welcome, {username}!", font=("Arial", 24)).pack(pady=10)
@@ -303,6 +305,22 @@ class SnackSyncApp:
         threading.Thread(target=lambda: self.display_snacks(username)).start()
         threading.Thread(target=lambda: self.update_total_calories(username)).start()
 
+    def fetch_clippy_interval(self, username, entry_box=None):
+        def get_interval():
+            try:
+                response = self.send_request(f"get_clippy_interval|{username}!END")
+                if response.isdigit():
+                    interval = int(response)
+                    print(f"interval = {interval}")
+                    if entry_box:
+                        entry_box.insert(0, str(interval))
+                    else:
+                        self.reminder_loop(interval)
+            except Exception as e:
+                print("[ERROR] Failed to fetch clippy_interval:", e)
+
+        threading.Thread(target=get_interval).start()
+
     def open_settings(self, username):
         self.clear_root()
         self.root.title("Settings")
@@ -310,8 +328,6 @@ class SnackSyncApp:
         self.center_window(self.root, 300, 400)
 
         ctk.CTkLabel(self.root, text="Settings", font=("Arial", 18)).pack(pady=10)
-
-        # --- 2FA toggle ---
         var = tk.BooleanVar()
 
         def fetch_current_2fa():
@@ -320,10 +336,14 @@ class SnackSyncApp:
             var.set(response == "1")
 
         threading.Thread(target=fetch_current_2fa).start()
-        toggle = ctk.CTkCheckBox(self.root, text="Enable 2FA", variable=var)
-        toggle.pack(pady=10)
+        twofabutton = ctk.CTkCheckBox(self.root, text="Enable 2FA", variable=var)
+        twofabutton.pack(pady=10)
 
-        # --- Goal input ---
+        ctk.CTkLabel(self.root, text="Remind me to log snacks every: (minutes)").pack()
+        notification_entry = ctk.CTkEntry(self.root)
+        notification_entry.pack(pady=5)
+
+
         ctk.CTkLabel(self.root, text="Daily Calorie Goal:").pack()
         goal_entry = ctk.CTkEntry(self.root)
         goal_entry.pack(pady=5)
@@ -373,13 +393,16 @@ class SnackSyncApp:
 
         threading.Thread(target=fetch_goal_info).start()
 
-        # --- Save button ---
+        self.fetch_clippy_interval(username, notification_entry)
+
         def save_all():
             new_2fa = 1 if var.get() else 0
             calories = goal_entry.get().strip()
             goal_type = selected_type.get()
-
-
+            notification_text = notification_entry.get().strip()
+            if not notification_text.isdigit():
+                messagebox.showerror("Invalid Input", "Reminder interval must be a number.")
+                return
             if not calories.isdigit():
                 messagebox.showerror("Invalid Input", "Please enter a numeric goal.")
                 return
@@ -400,10 +423,12 @@ class SnackSyncApp:
                 self.send_request(
                     f"update_goal|{encrypted_username}|{encrypted_calories}|{encrypted_goal_type}|{day}|{month}|{year}!END")
                 self.send_request(f"update_2fa|{encrypted_username}|{encrypted_2fa}!END")
+                self.send_request(
+                    f"update_clippy_interval|{username}|{notification_text}!END")
                 messagebox.showinfo("Saved", "Settings updated successfully.")
+                self.reminder_loop(int(notification_text))
 
             threading.Thread(target=threaded_save).start()
-
         ctk.CTkButton(self.root, text="Save", command=save_all).pack(pady=10)
         ctk.CTkButton(self.root, text="Back to main menu", command=lambda: self.open_main_screen(username)).pack(
             pady=10)
@@ -438,7 +463,7 @@ class SnackSyncApp:
                 print("[DEBUG] Server response:", response)
                 client.close()
 
-                def safe_gui_update():
+                def update_and_display():
                     try:
                         self.display_snacks(username)
                         self.update_total_calories(username)
@@ -453,7 +478,7 @@ class SnackSyncApp:
                     except Exception as e:
                         print("[ERROR] safe_gui_update crash:", e)
 
-                self.root.after(0, safe_gui_update)
+                self.root.after(0, update_and_display)
 
             except Exception as e:
                 print("[ERROR] Failed to log snack:", e)
@@ -496,17 +521,15 @@ class SnackSyncApp:
         threading.Thread(target=send_delete).start()
 
     def stats_window(self, username):
-        statswin = ctk.CTkToplevel()
-        statswin.title("Stats")
-        statswin.geometry("400x300")
-        self.center_window(statswin, 400, 300)
+        self.clear_root()
 
-        statswin.lift()
-        statswin.attributes("-topmost", True)
-        statswin.after(100, lambda: statswin.attributes("-topmost", False))
+        self.root.title("Stats")
+        self.root.geometry("400x300")
+        self.center_window(self.root, 400, 300)
 
-        ctk.CTkLabel(statswin, text="All time calorie intake:").pack(pady=10)
-        loading_label = ctk.CTkLabel(statswin, text="Loading...")
+
+        ctk.CTkLabel(self.root, text="All time stats:").pack(pady=10)
+        loading_label = ctk.CTkLabel(self.root, text="Loading...")
         loading_label.pack()
 
         def fetch_stats():
@@ -521,13 +544,11 @@ class SnackSyncApp:
                 return
 
             lines = response.strip().split("\n")
-            total_days = 0
-            goal_hits = 0
-
             def show_stats():
+
                 loading_label.destroy()
-                goal_hits = 0
-                total_days = 0
+                goal_reached = 0
+                total_days_logged = 0
 
                 for line in lines:
                     if ":" not in line:
@@ -556,73 +577,162 @@ class SnackSyncApp:
 
                             if goal_succeed:
                                 text += f"  | Goal reached: Yes {goal_text}"
-                                goal_hits += 1
+                                goal_reached += 1
                             else:
                                 text += f"  | Goal reached: No {goal_text}"
 
-                            total_days += 1
+                            total_days_logged  += 1
                         else:
                             text += "  | No goal set"
 
-                        ctk.CTkLabel(statswin, text=text).pack(anchor="w", padx=10, pady=2)
+                        ctk.CTkLabel(self.root, text=text).pack(anchor="w", padx=10, pady=2)
 
                     except Exception as e:
                         print("[ERROR] Failed to parse stats line:", line, e)
 
-                if total_days > 0:
-                    summary = f"You reached your goal {goal_hits} out of {total_days} days."
-                    ctk.CTkLabel(statswin, text=summary, font=("Arial", 12)).pack(pady=10)
+                if total_days_logged > 0:
+                    summary = f"You reached your goal {goal_reached} out of {total_days_logged} days."
+                    ctk.CTkLabel(root, text=summary, font=("Arial", 12)).pack(pady=10)
             self.root.after(0, show_stats)
+            ctk.CTkButton(self.root, text="Back to main menu", command=lambda: self.open_main_screen(username)).pack()
 
         threading.Thread(target=fetch_stats).start()
 
     def log_prev_days_window(self, username):
-        logdayswin = ctk.CTkToplevel()
-        logdayswin.title("Log previous days")
-        logdayswin.geometry("500x600")
-        self.center_window(logdayswin, 500, 600)
+        self.clear_root()
 
-        logdayswin.lift()
-        logdayswin.attributes("-topmost", True)
-        logdayswin.after(100, lambda: logdayswin.attributes("-topmost", False))
+        self.day_var = ctk.StringVar(value=str(datetime.today().day))
+        self.month_var = ctk.StringVar(value=str(datetime.today().month))
+        self.year_var = ctk.StringVar(value=str(datetime.today().year))
+
+        self.root.title("Log Previous Days")
+        self.root.geometry("500x600")
+        self.center_window(self.root, 500, 600)
 
         days = [str(v) for v in range(1, 32)]
         months = [str(v) for v in range(1, 13)]
         years = [str(v) for v in range(2022, 2031)]
 
-        ctk.CTkLabel(logdayswin, text="Day:").pack(pady=(10, 0))
-        ctk.CTkComboBox(logdayswin, values=days, variable=self.day_var).pack()
+        ctk.CTkLabel(self.root, text="Day:").pack(pady=(10, 0))
+        day_box = ctk.CTkComboBox(self.root, values=days, variable=self.day_var)
+        day_box.pack()
 
-        ctk.CTkLabel(logdayswin, text="Month:").pack(pady=(10, 0))
-        ctk.CTkComboBox(logdayswin, values=months, variable=self.month_var).pack()
+        ctk.CTkLabel(self.root, text="Month:").pack(pady=(10, 0))
+        month_box = ctk.CTkComboBox(self.root, values=months, variable=self.month_var)
+        month_box.pack()
 
-        ctk.CTkLabel(logdayswin, text="Year:").pack(pady=(10, 0))
-        ctk.CTkComboBox(logdayswin, values=years, variable=self.year_var).pack()
+        ctk.CTkLabel(self.root, text="Year:").pack(pady=(10, 0))
+        year_box = ctk.CTkComboBox(self.root, values=years, variable=self.year_var)
+        year_box.pack()
 
-        ctk.CTkLabel(logdayswin, text="Snack Name:").pack(pady=2)
-        self.snack_CTkEntry = ctk.CTkEntry(logdayswin)
+        # 🔁 Refresh snack list and calories when date changes
+        def refresh_curr_data(*_):
+            print("[DEBUG] refresh_curr_data triggered")
+            self.display_snacks(username)
+            self.update_total_calories(username)
+
+        self.day_var.trace_add("write", refresh_curr_data)
+        self.month_var.trace_add("write", refresh_curr_data)
+        self.year_var.trace_add("write", refresh_curr_data)
+
+        ctk.CTkLabel(self.root, text="Snack Name:").pack(pady=2)
+        self.snack_CTkEntry = ctk.CTkEntry(self.root)
         self.snack_CTkEntry.pack(pady=5)
 
-        ctk.CTkLabel(logdayswin, text="Calories:").pack(pady=2)
-        self.calories_CTkEntry = ctk.CTkEntry(logdayswin)
+        ctk.CTkLabel(self.root, text="Calories:").pack(pady=2)
+        self.calories_CTkEntry = ctk.CTkEntry(self.root)
         self.calories_CTkEntry.pack(pady=2)
 
-        self.total_calories_CTkLabel = ctk.CTkLabel(logdayswin, text="Total Calories This Day: 0 kcal",
+        self.total_calories_CTkLabel = ctk.CTkLabel(self.root, text="Total Calories This Day: 0 kcal",
                                                     font=("Arial", 12))
         self.total_calories_CTkLabel.pack(pady=5)
 
-        self.snack_listbox = tk.Listbox(logdayswin, width=50, height=8)
+        self.snack_listbox = tk.Listbox(self.root, width=50, height=8)
         self.snack_listbox.pack(pady=5)
 
-        def refresh_curr_data(*_):
-            self.update_total_calories(username)
-            self.display_snacks(username)
+        ctk.CTkLabel(self.root, text="Daily Calorie Goal:").pack()
+        goal_entry = ctk.CTkEntry(self.root)
+        goal_entry.pack(pady=5)
 
-        for var in [self.day_var, self.month_var, self.year_var]:
-            var.trace_add("write", refresh_curr_data)
+        selected_type = tk.IntVar(value=-1)
 
-        ctk.CTkButton(logdayswin, text="Log snack", command=lambda: self.log_snack(username)).pack(pady=5)
-        ctk.CTkButton(logdayswin, text="Delete selected snack", command=lambda: self.delete_selected_snack(username)).pack(pady=5)
+        def update_button_styles():
+            under_btn.configure(
+                fg_color="#1E90FF" if selected_type.get() == 0 else "#ADD8E6",
+                text_color="black"
+            )
+            over_btn.configure(
+                fg_color="#1E90FF" if selected_type.get() == 1 else "#ADD8E6",
+                text_color="black"
+            )
+
+        def select_under():
+            selected_type.set(0)
+            update_button_styles()
+
+        def select_over():
+            selected_type.set(1)
+            update_button_styles()
+
+        under_btn = ctk.CTkButton(
+            self.root, text="Stay under calorie goal", command=select_under,
+            fg_color="#ADD8E6", border_color="black", border_width=2, text_color="black", hover_color="#ADD8E6"
+        )
+        under_btn.pack(pady=5)
+
+        over_btn = ctk.CTkButton(
+            self.root, text="Stay over calorie goal", command=select_over,
+            fg_color="#ADD8E6", border_color="black", border_width=2, text_color="black", hover_color="#ADD8E6"
+        )
+        over_btn.pack(pady=5)
+
+        def fetch_goal_info():
+            encrypted_username = User.encrypt_rsa(username)
+            response = self.send_request(f"get_goal|{encrypted_username}!END")
+            if response and "|" in response:
+                cal, gtype = response.split("|")
+                if cal.isdigit():
+                    goal_entry.insert(0, cal)
+                if gtype in ("0", "1"):
+                    selected_type.set(int(gtype))
+                    update_button_styles()
+
+        threading.Thread(target=fetch_goal_info).start()
+
+        def save_goal():
+            calories = goal_entry.get().strip()
+            goal_type = selected_type.get()
+            if not calories.isdigit():
+                messagebox.showerror("Invalid Input", "Please enter a numeric goal.")
+                return
+            if goal_type not in (0, 1):
+                messagebox.showerror("Missing Selection", "Please select a goal type.")
+                return
+
+            day = self.day_var.get()
+            month = self.month_var.get()
+            year = self.year_var.get()
+
+            encrypted_username = User.encrypt_rsa(username)
+            encrypted_calories = User.encrypt_rsa(calories)
+            encrypted_goal_type = User.encrypt_rsa(str(goal_type))
+            print(f"[DEBUG] Sending goal update: calories={calories}, type={goal_type}")
+
+            def threaded_save():
+                self.send_request(
+                    f"update_goal|{encrypted_username}|{encrypted_calories}|{encrypted_goal_type}|{day}|{month}|{year}!END")
+                messagebox.showinfo("Saved", "Goal logged successfully.")
+
+            threading.Thread(target=threaded_save).start()
+
+        ctk.CTkButton(self.root, text="Log snack", command=lambda: self.log_snack(username)).pack(pady=5)
+        ctk.CTkButton(self.root, text="Delete selected snack",
+                      command=lambda: self.delete_selected_snack(username)).pack(pady=5)
+        ctk.CTkButton(self.root, text="Update goal for this day", command=save_goal).pack(pady=10)
+        ctk.CTkButton(self.root, text="Back to main menu", command=lambda: self.open_main_screen(username)).pack(
+            pady=10)
+
+        # Initial load
         self.display_snacks(username)
         self.update_total_calories(username)
 
