@@ -24,9 +24,17 @@ class User:
         except Exception as e:
             print(f"[ERROR] RSA encryption failed: {e}")
             return None
-
-    def check_password(self, enteredpassword):
-        return bcrypt.checkpw(enteredpassword.encode(), self.password)
+    @staticmethod
+    def decrypt_rsa(data):
+        try:
+            with open("rsa_private.pem", "rb") as f:
+                key = RSA.import_key(f.read())
+                cipher = PKCS1_OAEP.new(key)
+                decrypted = cipher.decrypt(base64.b64decode(data.encode()))
+                return decrypted.decode()
+        except Exception as e:
+            print(f"[ERROR] RSA decryption failed: {e}")
+            return None
 
     def save_to_db(self, conn):
         print("useless for now")

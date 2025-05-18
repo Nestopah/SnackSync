@@ -181,4 +181,11 @@ class DBManager:
             cursor = conn.cursor()
             cursor.execute("SELECT clippy_interval FROM users WHERE username = ?", (username,))
             result = cursor.fetchone()
-            return result[0] if result and result[0] is not None else 60  # default to 60 minutes
+            return result[0] if result and result[0] not in (None, 0) else 60 #no crashes anymore
+
+    def get_username_by_email(self, email):
+        with sqlite3.connect(self.db_name, timeout=5) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM users WHERE email = ?", (email,))
+            result = cursor.fetchone()
+            return result[0] if result else None
