@@ -1,5 +1,6 @@
 
 import socket
+from base64 import encode
 from operator import rshift
 
 import customtkinter as ctk
@@ -80,8 +81,7 @@ class SnackSyncApp:
        ##print(bg_color)
         ctk.CTkButton(self.root, text="Forgot password?", text_color="#66B2FF", fg_color="gray14", hover_color="gray14", border_width=0, command=self.open_password_reset).pack()
 
-    def hash(self, password): #for convenience
-        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
     def login(self):
         def login_thread():
             id = self.id_CTkEntry.get().strip()  # can be username or email
@@ -93,8 +93,8 @@ class SnackSyncApp:
             if self.possible_injections(id, allow_email=True):
                 return
 
-            enc_id = EncryptedMessage.rsa_encrypt_single(id)
-            enc_pass = self.hash(password)
+            encmsg = EncryptedMessage(id,password)
+            enc_id,enc_pass = encmsg.rsa_encrypt_all()
 
             message = f"login|{enc_id}|{enc_pass}!END"
             response = self.send_request(message)
@@ -156,16 +156,14 @@ class SnackSyncApp:
             if self.possible_injections(email,True):
                 return
             try:
-                hashed_password = self.hash(password)
-
-                msg = EncryptedMessage(username,email)
-                enc_username, enc_email = msg.rsa_encrypt_all()
+                msg = EncryptedMessage(username,email, password)
+                enc_username, enc_email, password = msg.rsa_encrypt_all()
 
             except Exception as e:
                 messagebox.showerror("Error", f"Signup failed:\n{e}")
                 return
 
-            message = f"register|{enc_username}|{hashed_password}|{enc_email}!END"
+            message = f"register|{enc_username}|{password}|{enc_email}!END"
             print("smg sending to server:", message)
 
             def handle_responses():
@@ -197,8 +195,8 @@ class SnackSyncApp:
                 return
             print(code)
             if newpass:
-                enc_user = EncryptedMessage.rsa_encrypt_single(username)
-                new_pass = self.hash(newpass)
+                msg = EncryptedMessage(username,newpass)
+                enc_user, new_pass = msg.rsa_encrypt_all()
                 message = f"reset_verify|{enc_user}|{new_pass}|{code}!END"
             else:
                 enc_user = EncryptedMessage.rsa_encrypt_single(username)
@@ -265,21 +263,21 @@ class SnackSyncApp:
             try:
                 user = User(user_id, password, "yogesh no need")
                 encrypted_user_id = user.rsa_username
-                hashed_password = user.password.decode()
+                encrypted_password = EncryptedMessage.rsa_encrypt_single(password)
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("Error"))
                 print("send and handle didnt work")
                 return
 
 
-            message = f"reset_pass|{encrypted_user_id}|{hashed_password}!END"
+            message = f"reset_pass|{encrypted_user_id}|{encrypted_password}!END"
             print("Sending reset message:", message)
             response = self.send_request(message).strip()
 
             if response == "OK":
                 self.root.after(0, lambda: [messagebox.showinfo("Success", "Password reset successful!"), self.open_main_screen(user_id)])
             elif response == "2FA":
-                self.root.after(0, lambda: self.show_2fa_prompt(user_id, newpass=hashed_password))
+                self.root.after(0, lambda: self.show_2fa_prompt(user_id, newpass=encrypted_password))
             else:
                 self.root.after(0, lambda: messagebox.showerror("Error", response))
 
@@ -384,7 +382,7 @@ class SnackSyncApp:
 
         def get_curr_2fa():
             msg = EncryptedMessage(username)
-            enc_user = msg.rsa_encrypt_all(username)
+            enc_user = msg.rsa_encrypt_all()
             response = self.send_request(f"get_2fa|{enc_user}!END")
             print(f"response = {response}")
             def update_checkbox():
@@ -489,7 +487,7 @@ class SnackSyncApp:
             try:
                 print("Connecting to server to log snack")
 
-                all = EncryptedMessage(username,snack_name, calories)
+                all = EncryptedMessage(username,snack_name, str(calories))
                 enc_username, enc_snack, enc_calories = all.rsa_encrypt_all()
                 data = f"log_snack|{enc_username}|{enc_snack}|{enc_calories}|{day}|{month}|{year}!END"
                 response = self.send_request(data)

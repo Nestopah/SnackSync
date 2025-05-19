@@ -64,16 +64,8 @@ def start_udp_discovery_server():
 
 
 def login(id, password):
-    try:
-        decrypted = decrypt_field(id)
-        print(f"Decrypted ID: {decrypted}")
-        print("[ Encrypted id =", id)
-    except Exception as e:
-        print("decrypt_field failed in login:", e)
-        return None
-
-    is_email = "@" in decrypted
-
+    is_email = "@" in id
+    print(f"password: {password}")
     if is_email:
         username = db.get_username_by_email(id)
     else:
@@ -84,6 +76,7 @@ def login(id, password):
         return None
 
     hash_in_db = db.get_user_password(username)
+    print(hash_in_db)
     if hash_in_db and bcrypt.checkpw(password.encode(), hash_in_db.encode()):
         print(f" Password correct for {username}")
         return username
@@ -133,14 +126,13 @@ def send_email(to_email, code):
         server.sendmail(my_email, to_email, message)
 
 
-def signup(encrypted_username, password, encrypted_email): #password is hashed in clienttera
+def signup(encrypted_username, password, encrypted_email):  # password is hashed in clienttera
     try:
-        print("sign  up activated")
         username = decrypt_field(encrypted_username)
         email = decrypt_field(encrypted_email)
-
-        print(f"decryp username: {username} hashed pass: {password} decryp email: {email}")
-
+        raw_password = decrypt_field(password)
+        password = bcrypt.hashpw(raw_password.encode(), bcrypt.gensalt()).decode()
+        db.insert_user(username, password, email)
 
         code = ''.join(secrets.choice("0123456789") for _ in range(6))
         all_2fa_codes[username] = (code, time.time() + 300)
@@ -148,21 +140,11 @@ def signup(encrypted_username, password, encrypted_email): #password is hashed i
 
         print("Email sent tera")
         send_email(email, code)
-        both = EncryptedMessage(username,email)
-        enc_user,enc_email = both.rsa_encrypt_all()
-        def add_user():
-            try:
-                db.insert_user(enc_user, password, enc_email)
-            except Exception as e:
-                print(f"adding user failed")
-
-        threading.Thread(target=add_user).start()
         return "2FA"
-    except sqlite3.IntegrityError:
-        return "FAIL"
     except Exception as e:
         print("Signup error:", e)
         return "FAIL"
+
 
 def add_snack(username, snack, calories, day, month, year):
     db.insert_snack(username, snack, calories, day, month, year)
@@ -207,10 +189,12 @@ def handle_client(client_socket):
 
         if op == "login":
             if len(args) == 2:
-                encrypted_id = args[0]
+                id = args[0]
                 password = args[1]
+                id = decrypt_field(id)
+                password = decrypt_field(password)
 
-                result = login(encrypted_id, password)
+                result = login(id, password)
                 if result:
                     username = result
                     if db.get_2fa(username) == 1:
@@ -247,6 +231,8 @@ def handle_client(client_socket):
                 username, snack, calories, day, month, year = args
                 print("log snack activated")
                 try:
+                    username = decrypt_field(username)
+                    snack = decrypt_field(snack)
                     calories = decrypt_field(calories)
                     add_snack(username, snack, calories, int(day), int(month), int(year))
                     client_socket.send(b"OK")
@@ -297,6 +283,7 @@ def handle_client(client_socket):
           try:
                 if len(args) == 4:
                     username, day, month, year = args
+                    username = decrypt_field(username)
                     total = get_total_calories(username, int(day), int(month), int(year))
                     client_socket.send(str(total).encode())
                     print(f"Sent total: {total}")
@@ -413,7 +400,10 @@ def handle_client(client_socket):
                 else:
                     real_username = decryp_id
                 if verify_2fa_code(real_username, submitted_code):
-                    updated = db.update_user_password(user_id, new_password)
+                    raw_password = decrypt_field(new_password)
+                    hashed_password = bcrypt.hashpw(raw_password.encode(), bcrypt.gensalt()).decode()
+                    updated = db.update_user_password(real_username, hashed_password)
+
                     if updated:
                         client_socket.send(b"OK")
                     else:
@@ -448,11 +438,12 @@ def handle_client(client_socket):
             if len(args) == 1:
                 try:
                     encrypted_username = args[0]
+                    username = decrypt_field(encrypted_username)
 
                     now = time.localtime()
                     day, month, year = now.tm_mday, now.tm_mon, now.tm_year
 
-                    result = db.get_goal_for_date(encrypted_username, day, month, year)
+                    result = db.get_goal_for_date(username, day, month, year)
 
                     if result:
                         goal_calories, goal_type = result
