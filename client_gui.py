@@ -45,10 +45,10 @@ def discover_server_ip():
             server_ip = response.split("|")[2]
             return server_ip
         else:
-            print("[ERROR] Unexpected server response:", response)
+            print(" Unexpected server response:", response)
             return None
     except Exception as e:
-        print("[ERROR] Could not discover SnackSync server:", e)
+        print("Could not discover SnackSync server:", e)
         return None
 
 SERVER_HOST = discover_server_ip()
@@ -195,9 +195,8 @@ class SnackSyncApp:
                 return
             print(code)
             if newpass:
-                msg = EncryptedMessage(username,newpass)
-                enc_user, new_pass = msg.rsa_encrypt_all()
-                message = f"reset_verify|{enc_user}|{new_pass}|{code}!END"
+                enc_user = EncryptedMessage.rsa_encrypt_single(username) #newpass already encrypted
+                message = f"reset_verify|{enc_user}|{newpass}|{code}!END"
             else:
                 enc_user = EncryptedMessage.rsa_encrypt_single(username)
                 message = f"check2fa|{enc_user}|{code}!END"
@@ -214,7 +213,7 @@ class SnackSyncApp:
 
     def send_request(self, message):
         try:
-            print("send_request activated")
+            print("send_request")
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.connect((SERVER_HOST, SERVER_PORT))
                 sock.sendall(message.encode())
@@ -261,8 +260,11 @@ class SnackSyncApp:
                 self.root.after(0, lambda: messagebox.showerror("Error", "Passwords do not match."))
                 return
             try:
-                user = User(user_id, password, "yogesh no need")
-                encrypted_user_id = user.rsa_username
+                if "@" in user_id:
+                    real_username = self.get_username_from_id(user_id)
+                    encrypted_user_id = EncryptedMessage.rsa_encrypt_single(real_username)
+                else:
+                    encrypted_user_id = EncryptedMessage.rsa_encrypt_single(user_id)
                 encrypted_password = EncryptedMessage.rsa_encrypt_single(password)
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("Error"))
@@ -277,11 +279,21 @@ class SnackSyncApp:
             if response == "OK":
                 self.root.after(0, lambda: [messagebox.showinfo("Success", "Password reset successful!"), self.open_main_screen(user_id)])
             elif response == "2FA":
-                self.root.after(0, lambda: self.show_2fa_prompt(user_id, newpass=encrypted_password))
+                real_username = self.get_username_from_id(user_id)
+                self.root.after(0, lambda: self.show_2fa_prompt(real_username, newpass=encrypted_password))
             else:
                 self.root.after(0, lambda: messagebox.showerror("Error", response))
 
         ctk.CTkButton(self.root, text="Reset Password",command=lambda: threading.Thread(target=send_and_handle).start()).pack(pady=10)
+
+    def get_username_from_id(self, user_id):
+        if "@" not in user_id:
+            return user_id  # already username
+        encrypted_email = EncryptedMessage.rsa_encrypt_single(user_id)
+        response = self.send_request(f"get_username_from_email|{encrypted_email}!END")
+        if response and response != "FAIL":
+            return response.strip()
+        return user_id
 
     def center_window(self, window, width, height):
         screen_width = window.winfo_screenwidth()
@@ -381,8 +393,7 @@ class SnackSyncApp:
         var = tk.BooleanVar()
 
         def get_curr_2fa():
-            msg = EncryptedMessage(username)
-            enc_user = msg.rsa_encrypt_all()
+            enc_user = EncryptedMessage.rsa_encrypt_single(username)
             response = self.send_request(f"get_2fa|{enc_user}!END")
             print(f"response = {response}")
             def update_checkbox():
@@ -421,18 +432,23 @@ class SnackSyncApp:
         over = ctk.CTkButton(self.root, text="Stay over calorie goal", command=select_over,fg_color="#ADD8E6", border_color="black", border_width=2, text_color="black", hover_color="#ADD8E6")
         over.pack(pady=5)
 
-        def fetch_goal_info():
+        def get_goal_info():
             enc_user = EncryptedMessage.rsa_encrypt_single(username)
             response = self.send_request(f"get_goal|{enc_user}!END")
             if response and "|" in response:
                 cal, gtype = response.split("|")
-                if cal.isdigit():
-                    goal_entry.insert(0, cal)
-                if gtype in ("0", "1"):
-                    selected_type.set(int(gtype))
-                    update_button_styles()
 
-        threading.Thread(target=fetch_goal_info).start()
+                def update():
+                    if cal.isdigit():
+                        goal_entry.delete(0, tk.END)
+                        goal_entry.insert(0, cal)
+                    if gtype in ("0", "1"):
+                        selected_type.set(int(gtype))
+                        update_button_styles()
+
+                self.root.after(0, update)
+
+        threading.Thread(target=get_goal_info).start()
         self.fetch_clippy_interval(username, notification_entry)
 
         def save_all():
@@ -443,10 +459,10 @@ class SnackSyncApp:
             if not notification_text.isdigit() or int(notification_text) <= 0:
                 messagebox.showerror("Invalid input", "Reminder timer must be a number greater than 0.")
                 return
-            if not calories.isdigit():
-                messagebox.showerror("Invalid input", "Please enter a numeric goal.")
+            if calories and not calories.isdigit():
+                messagebox.showerror("Invalid input", "Please enter a numeric goal or leave it blank as you wish.")
                 return
-            if goal_type not in (0, 1):
+            if goal_type not in (0, 1) and calories:
                 messagebox.showerror("Missing", "Please select a goal type.")
                 return
 
@@ -455,10 +471,11 @@ class SnackSyncApp:
             encname = EncryptedMessage.rsa_encrypt_single(username)
 
             print(f" Sending goal update: calories={calories}, type={goal_type}, 2FA={new_2fa}")
-
+            enc_cal = EncryptedMessage.rsa_encrypt_single(calories)
+            enc_type = EncryptedMessage.rsa_encrypt_single(str(goal_type))
             def send_for_save():
                 if calories.isdigit() and goal_type in (0, 1):
-                    self.send_request(f"update_goal|{encname}|{calories}|{goal_type}|{day}|{month}|{year}!END")
+                    self.send_request(f"update_goal|{encname}|{enc_cal}|{enc_type}|{day}|{month}|{year}!END")
                 elif calories or goal_type != -1:
                     pass
                 self.send_request(f"update_2fa|{encname}|{new_2fa}!END")
@@ -538,7 +555,7 @@ class SnackSyncApp:
                 msg = EncryptedMessage(username,snack_name, calories)
                 enc_user, enc_snack, enc_kcal = msg.rsa_encrypt_all()
                 message = f"delete_snack|{enc_user}|{enc_snack}|{enc_kcal}|{day}|{month}|{year}!END"
-                print("Sending delete message:", message)
+                print("del request:", message)
                 response = self.send_request(message).strip()
 
                 if response == "OK":
@@ -674,32 +691,34 @@ class SnackSyncApp:
         goal_entry.pack(pady=5)
         selected_type = tk.IntVar(value=-1)
         enc_user = EncryptedMessage.rsa_encrypt_single(username)
-        def get_goal_info():
 
+        def get_goal_info():
             day = self.day_var.get()
             month = self.month_var.get()
             year = self.year_var.get()
-
             print(f"goal for date {day}/{month}/{year}")
             response = self.send_request(f"get_goal_date|{enc_user}|{day}|{month}|{year}!END")
             print(f"goaal response = {response}")
+            def update_ui():
+                goal_entry.delete(0, tk.END)
+                selected_type.set(-1)
+                update_button_styles()
+                if response and "|" in response:
+                    cal, gtype = response.split("|")
+                    print(f" Parsed: cal={cal}, gtype={gtype}")
+                    if cal.isdigit():
+                        goal_entry.insert(0, cal)
+                    if gtype in ("0", "1"):
+                        selected_type.set(int(gtype))
+                        update_button_styles()
 
-            if response and "|" in response:
-                cal, gtype = response.split("|")
-                print(f"[GOAL FETCH] Parsed: cal={cal}, gtype={gtype}")
-                if cal.isdigit():
-                    goal_entry.delete(0, tk.END)
-                    goal_entry.insert(0, cal)
-                if gtype in ("0", "1"):
-                    selected_type.set(int(gtype))
-                    update_button_styles()
+            self.root.after(0, update_ui)
 
         def refresh_curr_data(*_):
             print("refresh_curr_data deltachan")
             self.display_snacks(username)
             self.update_total_calories(username)
-            get_goal_info()
-
+            threading.Thread(target=get_goal_info).start()
 
         def update_button_styles():
             under.configure(fg_color="#1E90FF" if selected_type.get() == 0 else "#ADD8E6", text_color="black")  # under
@@ -725,9 +744,10 @@ class SnackSyncApp:
         def save_goal():
             calories = goal_entry.get().strip()
             goal_type = selected_type.get()
-            if not calories.isdigit():
+            if not calories or not calories.isdigit():
                 messagebox.showerror("Invalid Input", "Please enter a numeric goal.")
                 return
+
             if goal_type not in (0, 1):
                 messagebox.showerror("Missing Selection", "Please select a goal type.")
                 return
@@ -736,11 +756,15 @@ class SnackSyncApp:
             month = self.month_var.get()
             year = self.year_var.get()
 
-
-            print(f"sending goal update: calories={calories}, type={goal_type}")
+            enc_cal = EncryptedMessage.rsa_encrypt_single(calories)
+            if enc_cal is None:
+                print("no")
+                return
+            enc_type = EncryptedMessage.rsa_encrypt_single(str(goal_type))
+            print(f"sending goal update: calories={calories} type={enc_type} user = {enc_user}")
 
             def actual_save():
-                self.send_request(f"update_goal|{enc_user}|{calories}|{goal_type}|{day}|{month}|{year}!END")
+                self.send_request(f"update_goal|{enc_user}|{enc_cal}|{enc_type}|{day}|{month}|{year}!END")
                 messagebox.showinfo("Saved", "Goal logged successfully.")
 
             threading.Thread(target=actual_save).start()
@@ -752,9 +776,13 @@ class SnackSyncApp:
         self.display_snacks(username)
         self.update_total_calories(username)
 
-        self.day_var.trace_add("write", refresh_curr_data)
+        self.day_var.trace_add("write", refresh_curr_data) #refresh ui when user adds anything
         self.month_var.trace_add("write", refresh_curr_data)
         self.year_var.trace_add("write", refresh_curr_data)
+        day_box.bind("<<ComboboxSelected>>", lambda e: refresh_curr_data()) #refresh ui when user selects date because the trace add doesnt work sometimes when you select
+        month_box.bind("<<ComboboxSelected>>", lambda e: refresh_curr_data())
+        year_box.bind("<<ComboboxSelected>>", lambda e: refresh_curr_data())
+
         refresh_curr_data()
 
     def update_total_calories(self, username):

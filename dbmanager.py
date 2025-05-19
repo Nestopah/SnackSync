@@ -192,7 +192,13 @@ class DBManager:
 
 class DBDBugger(DBManager):
     def log(self, func_name, *args):
-        message = "DBLOG: " + func_name + " : " + " | ".join([str(a) for a in args])
+        message = (f"DBLOG {func_name}: ")
+        parts = []
+        i = 0
+        for arg in args:
+            parts.append(str(arg))
+            i += 1
+        message += " | ".join(parts)
         print(message)
 
     def insert_user(self, username, password, email):

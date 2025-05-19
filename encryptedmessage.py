@@ -26,6 +26,8 @@ class EncryptedMessage:
     @staticmethod
     def rsa_encrypt_single(data):
         try:
+            if not data:
+                return None
             with open("rsa_public.pem", "rb") as f:
                 key = RSA.import_key(f.read())
                 cipher = PKCS1_OAEP.new(key)

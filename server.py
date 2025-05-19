@@ -104,16 +104,20 @@ def verify_2fa_code(username, submitted_code):
         return False
 
 
-def decrypt_field(possible_encrypted):
+def decrypt_field(encrypted_text):
+    if not encrypted_text or encrypted_text.strip() == "":
+        print("decrypt_field error: input is empty or None")
+        return None
     try:
-        raw = base64.b64decode(possible_encrypted)
+        decoded_data = base64.b64decode(encrypted_text)
         with open("rsa_private.pem", "rb") as f:
-            key = RSA.import_key(f.read())
-            cipher = PKCS1_OAEP.new(key)
-        return cipher.decrypt(raw).decode()
+            private_key = RSA.import_key(f.read())
+            cipher = PKCS1_OAEP.new(private_key)
+        return cipher.decrypt(decoded_data).decode()
     except Exception as e:
         print("decrypt_field error", e)
         return None
+
 
 def send_email(to_email, code):
     print("send email activated")
@@ -200,14 +204,14 @@ def handle_client(client_socket):
                     if db.get_2fa(username) == 1:
                         print(" 2FA is enabled")
                         email = db.get_email(username)
-                        email = decrypt_field(email)
+                        print(f" email from DB for {username} = {email}")
                         if email:
                             code = ''.join(secrets.choice("0123456789") for _ in range(6))
                             all_2fa_codes[username] = (code, time.time() + 300)
                             send_email(email, code)
                             client_socket.send(f"2FA|{username}".encode())
                         else:
-                            print("[LOGIN] No email found")
+                            print(" No email found")
                             client_socket.send(b"FAIL")
                     else:
                         client_socket.send(username.encode())
@@ -263,6 +267,7 @@ def handle_client(client_socket):
             try:
                 if len(args) == 4:
                     username, day, month, year = args
+                    username = decrypt_field(username)
                     print(f"[DEBUG] Get snacks for {username} on {day}/{month}/{year}")
                     rows = db.get_snacks(username, int(day), int(month), int(year))
                     if not rows:
@@ -362,17 +367,12 @@ def handle_client(client_socket):
             if len(args) == 2:
                 enc_user_id, hashed_password = args
                 try:
-                    user_id = decrypt_field(enc_user_id)
-                    if "@" in user_id:
-                        real_username = db.get_username_by_email(user_id)
-                    else:
-                        real_username = user_id
+                    real_username = decrypt_field(enc_user_id)
                     email = db.get_email(real_username)
-                    email = decrypt_field(email)
                     if email:
                         try:
                             code = ''.join(secrets.choice("0123456789") for _ in range(6))
-                            all_2fa_codes[user_id] = (code, time.time() + 300)
+                            all_2fa_codes[real_username] = (code, time.time() + 300)
                             send_email(email, code)
                             client_socket.send(b"2FA")  # tell client to prompt for code
                             return
@@ -394,16 +394,11 @@ def handle_client(client_socket):
         elif op == "reset_verify":
             if len(args) == 3:
                 user_id, new_password, submitted_code = args
-                decryp_id = decrypt_field(user_id)
-                if "@" in decryp_id:
-                    real_username = db.get_username_by_email(user_id)
-                else:
-                    real_username = decryp_id
+                real_username = decrypt_field(user_id)
                 if verify_2fa_code(real_username, submitted_code):
                     raw_password = decrypt_field(new_password)
                     hashed_password = bcrypt.hashpw(raw_password.encode(), bcrypt.gensalt()).decode()
                     updated = db.update_user_password(real_username, hashed_password)
-
                     if updated:
                         client_socket.send(b"OK")
                     else:
@@ -421,7 +416,7 @@ def handle_client(client_socket):
                     enc_username, enc_cal, enc_type, day, month, year = args
                     username = decrypt_field(enc_username)
                     goal_cal_str = decrypt_field(enc_cal)
-                    goal_calories = int(goal_cal_str) #rsa is string
+                    goal_calories = int(goal_cal_str)
                     goal_type = int(decrypt_field(enc_type))
                     day, month, year = int(day), int(month), int(year)
 
@@ -462,6 +457,7 @@ def handle_client(client_socket):
             if len(args) == 1:
                 username = args[0]
                 try:
+                    username = decrypt_field(username)
                     interval = db.get_interval(username)
                     client_socket.send(str(interval).encode())
                 except Exception as e:
@@ -475,6 +471,7 @@ def handle_client(client_socket):
                 username = args[0]
                 try:
                     new_interval = int(args[1])
+                    username = decrypt_field(username)
                     db.update_interval(username, new_interval)
                     client_socket.send(b"OK")
                 except Exception as e:
@@ -487,7 +484,8 @@ def handle_client(client_socket):
                 try:
                     encrypted_username, day, month, year = args
                     day, month, year = int(day), int(month), int(year)
-                    result = db.get_goal_for_date(encrypted_username, day, month, year)
+                    username = decrypt_field(encrypted_username)
+                    result = db.get_goal_for_date(username, day, month, year)
                     if result:
                         goal_calories, goal_type = result
                         response = f"{goal_calories}|{goal_type}"
@@ -503,6 +501,15 @@ def handle_client(client_socket):
             else:
                 print("invalid get_goal_date arguments:", args)
                 client_socket.send(b"error")
+        elif op == "get_username_from_email":
+            if len(args) == 1:
+                email = decrypt_field(args[0])
+                username = db.get_username_by_email(email)
+                if username:
+                    client_socket.send(username.encode())
+                else:
+                    client_socket.send(b"FAIL")
+
 
         else:
             print("error with if op == ")
