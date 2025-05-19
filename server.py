@@ -1,19 +1,17 @@
 
 import socket
-import sqlite3
 import threading
 import bcrypt
 import time
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 import base64
-from CountryDetector import CountryDetector
 import smtplib
-import secrets
-from dbmanager import DBDBugger
-from encryptedmessage import EncryptedMessage
 
-ip_times_of_conn= {} # when  a specific ip logged
+from dbmanager import DBDBugger
+
+
+ip_times_of_conn= {}
 RATE_LIMIT_WINDOW = 1
 MAX_CONNECTIONS = 20
 all_conn_times = []
@@ -26,7 +24,6 @@ SERVER_PORT = 12345
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.bind((SERVER_HOST, SERVER_PORT))
 server.listen(5)
-print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
 
 db = DBDBugger()
 
@@ -34,7 +31,7 @@ db = DBDBugger()
 def start_udp_discovery_server():
     DISCOVERY_PORT = 54545
     DISCOVERY_WORD = "SNACKSYNC"
-    DISCOVERY_VERSION = "v1.0" #incase of future updates
+    DISCOVERY_VERSION = "v1.0"
 
     def get_local_ip():
         try:
@@ -45,6 +42,7 @@ def start_udp_discovery_server():
             return ip
         except:
             return "127.0.0.1"
+
 
     def listen():
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -58,55 +56,53 @@ def start_udp_discovery_server():
                     response = f"{DISCOVERY_WORD}_SERVER|{DISCOVERY_VERSION}|{ip}"
                     sock.sendto(response.encode(), addr)
             except Exception as e:
-                print("[UDP ERROR]", e)
-
+                continue
     threading.Thread(target=listen, daemon=True).start()
+
+
+def generate_code():
+    length = 6
+    digits = "0123456789"
+    code = ""
+    t = int(time.time() * 1000)
+    for i in range(length):
+        t = (t * 7 + i)
+        code += digits[t % 10]
+    return code
 
 
 def login(id, password):
     is_email = "@" in id
-    print(f"password: {password}")
     if is_email:
         username = db.get_username_by_email(id)
     else:
         username = id
-
     if not username:
-        print("User not found")
         return None
 
     hash_in_db = db.get_user_password(username)
-    print(hash_in_db)
     if hash_in_db and bcrypt.checkpw(password.encode(), hash_in_db.encode()):
-        print(f" Password correct for {username}")
         return username
     else:
-        print("Invalid credentials")
         return None
-
-
 
 
 def verify_2fa_code(username, submitted_code):
     if username not in all_2fa_codes:
-        print("2fa token for user doesnt exist")
         return False
 
     correct_code, expiry = all_2fa_codes[username]
     now = time.time()
 
     if submitted_code == correct_code and now <= expiry:
-        print(f"2FA code is correct")
         del all_2fa_codes[username]  #remove token so there wont be overload
         return True
     else:
-        print("Invalid or expired 2FA code")
         return False
 
 
 def decrypt_field(encrypted_text):
     if not encrypted_text or encrypted_text.strip() == "":
-        print("decrypt_field error: input is empty or None")
         return None
     try:
         decoded_data = base64.b64decode(encrypted_text)
@@ -115,13 +111,11 @@ def decrypt_field(encrypted_text):
             cipher = PKCS1_OAEP.new(private_key)
         return cipher.decrypt(decoded_data).decode()
     except Exception as e:
-        print("decrypt_field error", e)
         return None
 
 
 def send_email(to_email, code):
-    print("send email activated")
-    my_email = "latexdus@gmail.com" #other email didnt work
+    my_email = "latexdus@gmail.com"
     password = "dsevptrpckqotgpq"
 
     message = f"Subject: Your SnackSync Verification Code\n\nYour code is: {code}"
@@ -130,7 +124,7 @@ def send_email(to_email, code):
         server.sendmail(my_email, to_email, message)
 
 
-def signup(encrypted_username, password, encrypted_email):  # password is hashed in clienttera
+def signup(encrypted_username, password, encrypted_email):
     try:
         username = decrypt_field(encrypted_username)
         email = decrypt_field(encrypted_email)
@@ -138,15 +132,11 @@ def signup(encrypted_username, password, encrypted_email):  # password is hashed
         password = bcrypt.hashpw(raw_password.encode(), bcrypt.gensalt()).decode()
         db.insert_user(username, password, email)
 
-        code = ''.join(secrets.choice("0123456789") for _ in range(6))
+        code = generate_code()
         all_2fa_codes[username] = (code, time.time() + 300)
-        print(code)
-
-        print("Email sent tera")
         send_email(email, code)
         return "2FA"
     except Exception as e:
-        print("Signup error:", e)
         return "FAIL"
 
 
@@ -175,11 +165,10 @@ def recieve_data(sock):
             break
     return data.decode().replace("!END", "")
 
+
 def handle_client(client_socket):
-    print("handle client activated")
     try:
         data = recieve_data(client_socket)
-        print(f"data = {data}")
         if "|" in data:
             parts = data.split("|")
             op = parts[0]
@@ -187,9 +176,6 @@ def handle_client(client_socket):
         else:
             op = data
             args = []
-
-        print("[DEBUG] Operation requested:", op)
-        # Only send ACK for old-style operations
 
         if op == "login":
             if len(args) == 2:
@@ -202,16 +188,13 @@ def handle_client(client_socket):
                 if result:
                     username = result
                     if db.get_2fa(username) == 1:
-                        print(" 2FA is enabled")
                         email = db.get_email(username)
-                        print(f" email from DB for {username} = {email}")
                         if email:
-                            code = ''.join(secrets.choice("0123456789") for _ in range(6))
+                            code = generate_code()
                             all_2fa_codes[username] = (code, time.time() + 300)
                             send_email(email, code)
                             client_socket.send(f"2FA|{username}".encode())
                         else:
-                            print(" No email found")
                             client_socket.send(b"FAIL")
                     else:
                         client_socket.send(username.encode())
@@ -233,16 +216,13 @@ def handle_client(client_socket):
         elif op == "log_snack":
             if len(args) == 6:
                 username, snack, calories, day, month, year = args
-                print("log snack activated")
                 try:
                     username = decrypt_field(username)
                     snack = decrypt_field(snack)
                     calories = decrypt_field(calories)
                     add_snack(username, snack, calories, int(day), int(month), int(year))
                     client_socket.send(b"OK")
-                    print("log_snack sent ok")
                 except Exception as e:
-                    print("couldnt log snack in server:", e)
                     client_socket.send(b"FAIL")
             else:
                 client_socket.send(b"FAIL")
@@ -258,17 +238,14 @@ def handle_client(client_socket):
                     delete_snack(username, snack, calories, day, month, year)
                     client_socket.send(b"OK")
                 else:
-                    print("[ERROR] Invalid delete_snack args:", args)
                     client_socket.send(b"FAIL")
             except Exception as e:
-                print("deleting snack failed:", e)
                 client_socket.send(b"FAIL")
         elif op == "get_snacks":
             try:
                 if len(args) == 4:
                     username, day, month, year = args
                     username = decrypt_field(username)
-                    print(f"[DEBUG] Get snacks for {username} on {day}/{month}/{year}")
                     rows = db.get_snacks(username, int(day), int(month), int(year))
                     if not rows:
                         client_socket.send(b"NONE")
@@ -279,10 +256,8 @@ def handle_client(client_socket):
                         snacks = snacks.strip()
                         client_socket.send(snacks.encode())
                 else:
-                    print("[ERROR] Invalid get_snacks args:", args)
-                    client_socket.send(b"FAIL")  # <== also better than empty
+                    client_socket.send(b"FAIL")
             except Exception as e:
-                print("Failed get_snacks:", e)
                 client_socket.send(b"FAIL")
         elif op == "get_total":
           try:
@@ -291,19 +266,16 @@ def handle_client(client_socket):
                     username = decrypt_field(username)
                     total = get_total_calories(username, int(day), int(month), int(year))
                     client_socket.send(str(total).encode())
-                    print(f"Sent total: {total}")
                 else:
                     client_socket.send(b"0")
           except Exception as e:
-                print("Exception in get_total:", e)
                 client_socket.send(b"0")
         elif op == "get_stats":
             try:
                 if len(args) == 1:
                     username = args[0]
                     username = decrypt_field(username)
-                    print(f"Getting stats for {username}")
-                    history = db.get_stats(username) #all user snack history for all days
+                    history = db.get_stats(username)
                     if not history:
                         client_socket.send(b"NONE")
                         return
@@ -314,14 +286,12 @@ def handle_client(client_socket):
                             gcal, gtype = goal
                             stat_to_print.append(f"{day}/{month}/{year}:{total}|{gcal}|{gtype}")
                         else:
-                            stat_to_print.append(f"{day}/{month}/{year}:{total}||")  # no goal set
+                            stat_to_print.append(f"{day}/{month}/{year}:{total}||")
                     message = "\n".join(stat_to_print)
                     client_socket.send(message.encode())
                 else:
-                    print("Invalid stats arguments:", args)
                     client_socket.send(b"FAIL")
             except Exception as e:
-                print("Exception in get_stats:", e)
                 client_socket.send(b"FAIL")
 
 
@@ -333,7 +303,6 @@ def handle_client(client_socket):
                     result = db.get_2fa(username)
                     client_socket.send(str(result).encode())
                 except Exception as e:
-                    print("get_2fa failed:", e)
                     client_socket.send(b"0")
             else:
                 client_socket.send(b"0")
@@ -342,13 +311,10 @@ def handle_client(client_socket):
                 username, submitted_code = args
                 username = decrypt_field(username)
                 if verify_2fa_code(username, submitted_code):
-                    print("2FA login works")
                     client_socket.send(b"OK")
                 else:
-                    print("2FA login failed")
                     client_socket.send(b"FAIL")
             else:
-                print(" Invalid login2fa arguments")
                 client_socket.send(b"FAIL")
         elif op == "update_2fa":
             if len(args) == 2:
@@ -357,9 +323,7 @@ def handle_client(client_socket):
                     username = decrypt_field(username)
                     db.update_2fa(username, value)
                     client_socket.send(b"OK")
-                    print("update 2fa succeeded")
                 except Exception as e:
-                    print("update_2fa failed:", e)
                     client_socket.send(b"FAIL")
             else:
                 client_socket.send(b"FAIL")
@@ -371,25 +335,21 @@ def handle_client(client_socket):
                     email = db.get_email(real_username)
                     if email:
                         try:
-                            code = ''.join(secrets.choice("0123456789") for _ in range(6))
+                            code = generate_code()
                             all_2fa_codes[real_username] = (code, time.time() + 300)
                             send_email(email, code)
                             client_socket.send(b"2FA")  # tell client to prompt for code
                             return
                         except Exception as e:
-                            print(f" Failed to send email im reset_pass: {e}")
                             client_socket.send(b"FAIL")
                             return
                     else:
-                        print("No email found")
                         client_socket.send(b"FAIL")
                         return
 
                 except Exception as e:
-                    print(f"reset_pass failed: {e}")
                     client_socket.send(b"FAIL")
             else:
-                print("Invalid reset_pass args")
                 client_socket.send(b"FAIL")
         elif op == "reset_verify":
             if len(args) == 3:
@@ -402,10 +362,8 @@ def handle_client(client_socket):
                     if updated:
                         client_socket.send(b"OK")
                     else:
-                        print(f"Password update failed for {user_id}")
                         client_socket.send(b"FAIL")
                 else:
-                    print("Invalid or expired 2FA code")
                     client_socket.send(b"FAIL")
             else:
                 client_socket.send(b"FAIL")
@@ -423,10 +381,8 @@ def handle_client(client_socket):
                     db.update_goals(username, goal_calories, goal_type, day, month, year)
                     client_socket.send(b"OK")
                 except Exception as e:
-                    print("update_goal failed:", e)
                     client_socket.send(b"error")
             else:
-                print("invalid update_goal args:", args)
                 client_socket.send(b"error")
 
         elif op == "get_goal":
@@ -448,12 +404,10 @@ def handle_client(client_socket):
 
                     client_socket.send(response.encode())
                 except Exception as e:
-                    print("get_goal error:", e)
                     client_socket.send(b"error")
             else:
-                print("invalid get_goal arguments", args)
-                client_socket.send(b"error")  #TODO FIX TIHS FUNCTION TO TAKE DATE ARGUMENTS YOGESH
-        elif op == "get_clippy_interval": #skippy is goeie
+                client_socket.send(b"error")
+        elif op == "get_clippy_interval":
             if len(args) == 1:
                 username = args[0]
                 try:
@@ -461,8 +415,7 @@ def handle_client(client_socket):
                     interval = db.get_interval(username)
                     client_socket.send(str(interval).encode())
                 except Exception as e:
-                    print("get_clippy_interval failed:", e)
-                    client_socket.send(b"60")  #dfult
+                    client_socket.send(b"60")
             else:
                 client_socket.send(b"60")
 
@@ -475,7 +428,6 @@ def handle_client(client_socket):
                     db.update_interval(username, new_interval)
                     client_socket.send(b"OK")
                 except Exception as e:
-                    print("update_clippy_interval failed:", e)
                     client_socket.send(b"FAIL")
             else:
                 client_socket.send(b"FAIL")
@@ -493,13 +445,8 @@ def handle_client(client_socket):
                         response = "|"
                     client_socket.send(response.encode())
                 except Exception as e:
-                    import traceback
-                    print("[ERROR] get_goal_date failed:", e)
-                    traceback.print_exc()
                     client_socket.send(b"error")
-
             else:
-                print("invalid get_goal_date arguments:", args)
                 client_socket.send(b"error")
         elif op == "get_username_from_email":
             if len(args) == 1:
@@ -509,22 +456,18 @@ def handle_client(client_socket):
                     client_socket.send(username.encode())
                 else:
                     client_socket.send(b"FAIL")
-
-
         else:
-            print("error with if op == ")
             client_socket.send(b"Invalid operation")
 
     except Exception as e:
-        print("error in handle_client:", e)
         client_socket.send(f"Error: {e}".encode())
     finally:
         client_socket.close()
 
+
 def check_multiple_ip_ddos():
     now = time.time()
     recent_connections = [t for t in all_conn_times if now - t < 5]
-    print(f" {len(recent_connections)} connections in last 5 seconds")
     if len(recent_connections) >= 30:
         return False
     recent_connections.append(now)
@@ -549,10 +492,8 @@ def check_single_ip_ddos(ip):
     return True
 
 
-
 def start_server():
     start_udp_discovery_server()
-    print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
     while True:
         client_socket, address = server.accept()
         client_ip = address[0]
@@ -562,7 +503,6 @@ def start_server():
             client_socket.close()
             continue
         if not check_multiple_ip_ddos():
-            print("The server is busy")
             client_socket.send(b"BUSY")
             client_socket.close()
             continue

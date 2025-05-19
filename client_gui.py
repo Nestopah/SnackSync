@@ -1,27 +1,11 @@
 
 import socket
-from base64 import encode
-from operator import rshift
-
 import customtkinter as ctk
 import tkinter as tk
 from tkinter  import messagebox
 from datetime import datetime
-
-from customtkinter import CTkEntry
-
-from hasher import hash_password
-from snack import Snack
-from snack import EncryptedSnack
-import time
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP
-import base64
 import threading
-import bcrypt
 from clippy import Clippy
-from PIL import Image, ImageTk
-from user import User
 from encryptedmessage import EncryptedMessage
 
 
@@ -45,10 +29,8 @@ def discover_server_ip():
             server_ip = response.split("|")[2]
             return server_ip
         else:
-            print(" Unexpected server response:", response)
             return None
     except Exception as e:
-        print("Could not discover SnackSync server:", e)
         return None
 
 SERVER_HOST = discover_server_ip()
@@ -56,13 +38,16 @@ SERVER_PORT = 12345
 if not SERVER_HOST:
     boot = ctk.CTk()
     boot.withdraw()
-    messagebox.showerror("Connection Error", "Could not find SnackSync server on the network.\nGoodbye boyo.")
+    messagebox.showerror("Connection Error", "Could not find SnackSync server on the network.\nGoodbye.")
     exit()
 
 class SnackSyncApp:
     def __init__(self, root):
         self.root = root
-        self.root.iconbitmap("icon.ico")
+        try:
+            self.root.iconbitmap("icon.ico")
+        except Exception as e:
+            pass
         self.root.title("SnackSync - Login/Register")
         self.root.geometry("300x250")
         self.center_window(root, 300,300)
@@ -80,7 +65,6 @@ class SnackSyncApp:
        ## bg_color = self.root._apply_appearance_mode(ctk.ThemeManager.theme["CTk"]["fg_color"])
        ##print(bg_color)
         ctk.CTkButton(self.root, text="Forgot password?", text_color="#66B2FF", fg_color="gray14", hover_color="gray14", border_width=0, command=self.open_password_reset).pack()
-
 
     def login(self):
         def login_thread():
@@ -307,6 +291,7 @@ class SnackSyncApp:
             self.clippy_timer.cancel() #ignore warning it gets pass later
         except AttributeError: #dexteruchi
             pass
+
         def loop():
             self.clippy.notification("SnackSync", "Don't forget to log your snacks!")
             self.clippy_timer = threading.Timer(interval_minutes * 60, loop)
@@ -698,7 +683,7 @@ class SnackSyncApp:
             year = self.year_var.get()
             print(f"goal for date {day}/{month}/{year}")
             response = self.send_request(f"get_goal_date|{enc_user}|{day}|{month}|{year}!END")
-            print(f"goaal response = {response}")
+
             def update_ui():
                 goal_entry.delete(0, tk.END)
                 selected_type.set(-1)
@@ -786,6 +771,7 @@ class SnackSyncApp:
         refresh_curr_data()
 
     def update_total_calories(self, username):
+
         def get_total():
             day = self.day_var.get()
             month = self.month_var.get()
@@ -807,6 +793,7 @@ class SnackSyncApp:
         threading.Thread(target=get_total, daemon=True).start()
 
     def display_snacks(self, username):
+
         def send_display_info():
             day = self.day_var.get()
             month = self.month_var.get()
@@ -818,6 +805,7 @@ class SnackSyncApp:
             print("display_snacks sending:", message)
 
             snack_list = self.send_request(message).strip()
+
             def update_listbox():
                 self.snack_listbox.delete(0, ctk.END)
                 if snack_list and snack_list != "NONE":
