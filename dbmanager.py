@@ -189,3 +189,72 @@ class DBManager:
             cursor.execute("SELECT username FROM users WHERE email = ?", (email,))
             result = cursor.fetchone()
             return result[0] if result else None
+
+class DBDBugger(DBManager):
+    def log(self, func_name, *args):
+        message = "DBLOG: " + func_name + " : " + " | ".join([str(a) for a in args])
+        print(message)
+
+    def insert_user(self, username, password, email):
+        self.log("insert_user", username, password, email)
+        return super().insert_user(username, password, email)
+
+    def get_user_password(self, username):
+        self.log("get_user_password", username)
+        return super().get_user_password(username)
+
+    def get_2fa(self, username):
+        self.log("get_2fa", username)
+        return super().get_2fa(username)
+
+    def update_2fa(self, username, value):
+        self.log("update_2fa", username, value)
+        return super().update_2fa(username, value)
+
+    def get_email(self, username):
+        self.log("get_email", username)
+        return super().get_email(username)
+
+    def update_user_password(self, identifier, new_password):
+        self.log("update_user_password", identifier, new_password)
+        return super().update_user_password(identifier, new_password)
+
+    def insert_snack(self, username, snack, calories, day, month, year):
+        self.log("insert_snack", username, snack, calories, day, month, year)
+        return super().insert_snack(username, snack, calories, day, month, year)
+
+    def get_total_calories(self, username, day, month, year):
+        self.log("get_total_calories", username, day, month, year)
+        return super().get_total_calories(username, day, month, year)
+
+    def get_snacks(self, username, day, month, year):
+        self.log("get_snacks", username, day, month, year)
+        return super().get_snacks(username, day, month, year)
+
+    def get_stats(self, username):
+        self.log("get_stats", username)
+        return super().get_stats(username)
+
+    def update_goals(self, username, goal_calories, goal_type, day, month, year):
+        self.log("update_goals", username, goal_calories, goal_type, day, month, year)
+        return super().update_goals(username, goal_calories, goal_type, day, month, year)
+
+    def get_goal_for_date(self, username, day, month, year):
+        self.log("get_goal_for_date", username, day, month, year)
+        return super().get_goal_for_date(username, day, month, year)
+
+    def delete_snack(self, username, snack, calories, day, month, year):
+        self.log("delete_snack", username, snack, calories, day, month, year)
+        return super().delete_snack(username, snack, calories, day, month, year)
+
+    def update_interval(self, username, interval_minutes):
+        self.log("update_interval", username, interval_minutes)
+        return super().update_interval(username, interval_minutes)
+
+    def get_interval(self, username):
+        self.log("get_interval", username)
+        return super().get_interval(username)
+
+    def get_username_by_email(self, email):
+        self.log("get_username_by_email", email)
+        return super().get_username_by_email(email)

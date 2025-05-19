@@ -1,5 +1,7 @@
 
 import socket
+from operator import rshift
+
 import customtkinter as ctk
 import tkinter as tk
 from tkinter  import messagebox
@@ -19,6 +21,9 @@ import bcrypt
 from clippy import Clippy
 from PIL import Image, ImageTk
 from user import User
+from encryptedmessage import EncryptedMessage
+
+
 
 def discover_server_ip():
     DISCOVERY_PORT = 54545
@@ -75,6 +80,8 @@ class SnackSyncApp:
        ##print(bg_color)
         ctk.CTkButton(self.root, text="Forgot password?", text_color="#66B2FF", fg_color="gray14", hover_color="gray14", border_width=0, command=self.open_password_reset).pack()
 
+    def hash(self, password): #for convenience
+        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     def login(self):
         def login_thread():
             id = self.id_CTkEntry.get().strip()  # can be username or email
@@ -86,7 +93,10 @@ class SnackSyncApp:
             if self.possible_injections(id, allow_email=True):
                 return
 
-            message = f"login|{id}|{password}!END"
+            enc_id = EncryptedMessage.rsa_encrypt_single(id)
+            enc_pass = self.hash(password)
+
+            message = f"login|{enc_id}|{enc_pass}!END"
             response = self.send_request(message)
 
             if response.startswith("2FA|"):
@@ -112,8 +122,8 @@ class SnackSyncApp:
         self.clear_root()
 
         self.root.title("SnackSync - Sign up")
-        self.root.geometry("500x600")
-        self.center_window(self.root, 500, 600)
+        self.root.geometry("300x400")
+        self.center_window(self.root, 300, 400)
 
 
         ctk.CTkLabel(self.root, text="Username:").pack(pady=5)
@@ -146,28 +156,17 @@ class SnackSyncApp:
             if self.possible_injections(email,True):
                 return
             try:
-                with open("rsa_public.pem", "rb") as f:
-                    key = RSA.import_key(f.read())
-                    cipher = PKCS1_OAEP.new(key)
-            except Exception as e:
-                messagebox.showerror("Error", f"Signup didnt work:\n{e}")
-                return
+                hashed_password = self.hash(password)
 
-            try:
-                encrypted_username = base64.b64encode(cipher.encrypt(username.encode())).decode()
-                encrypted_password = base64.b64encode(cipher.encrypt(password.encode())).decode()
-                encrypted_email = base64.b64encode(cipher.encrypt(email.encode())).decode()
+                msg = EncryptedMessage(username,email)
+                enc_username, enc_email = msg.rsa_encrypt_all()
 
-                print("Encrypted username:", encrypted_username)
-                print("Encrypted password:", encrypted_password)
-                print(" Encrypted email:", encrypted_email)
-                print(" Total message length:",len(f"register|{encrypted_username}|{encrypted_password}|{encrypted_email}"))
             except Exception as e:
                 messagebox.showerror("Error", f"Signup failed:\n{e}")
                 return
 
-            message = f"register|{encrypted_username}|{encrypted_password}|{encrypted_email}!END"
-            print("message sending to server:", message)
+            message = f"register|{enc_username}|{hashed_password}|{enc_email}!END"
+            print("smg sending to server:", message)
 
             def handle_responses():
                 response = self.send_request(message)
@@ -196,11 +195,15 @@ class SnackSyncApp:
             if not code.isdigit() or len(code) != 6:
                 messagebox.showerror("Error", "Enter a valid 6-digit code.")
                 return
-
+            print(code)
             if newpass:
-                message = f"reset_verify|{username}|{newpass}|{code}!END"
+                enc_user = EncryptedMessage.rsa_encrypt_single(username)
+                new_pass = self.hash(newpass)
+                message = f"reset_verify|{enc_user}|{new_pass}|{code}!END"
             else:
-                message = f"check2fa|{username}|{code}!END"
+                enc_user = EncryptedMessage.rsa_encrypt_single(username)
+                message = f"check2fa|{enc_user}|{code}!END"
+                print("check2fa")
 
             response = self.send_request(message)
             if response == "OK":
@@ -268,9 +271,9 @@ class SnackSyncApp:
                 print("send and handle didnt work")
                 return
 
+
             message = f"reset_pass|{encrypted_user_id}|{hashed_password}!END"
             print("Sending reset message:", message)
-
             response = self.send_request(message).strip()
 
             if response == "OK":
@@ -354,9 +357,10 @@ class SnackSyncApp:
         self.__init__(self.root)  #yog
 
     def fetch_clippy_interval(self, username, entry_box=None): #flippy
+        enc_user = EncryptedMessage.rsa_encrypt_single(username)
         def get_interval():
             try:
-                response = self.send_request(f"get_clippy_interval|{username}!END")
+                response = self.send_request(f"get_clippy_interval|{enc_user}!END")
                 if response.isdigit():
                     interval = int(response)
                     print(f"interval = {interval}")
@@ -379,8 +383,9 @@ class SnackSyncApp:
         var = tk.BooleanVar()
 
         def get_curr_2fa():
-            encrypted_username = User.encrypt_rsa(username)
-            response = self.send_request(f"get_2fa|{encrypted_username}!END")
+            msg = EncryptedMessage(username)
+            enc_user = msg.rsa_encrypt_all(username)
+            response = self.send_request(f"get_2fa|{enc_user}!END")
             print(f"response = {response}")
             def update_checkbox():
                 var.set(response.strip() == "1")
@@ -419,8 +424,8 @@ class SnackSyncApp:
         over.pack(pady=5)
 
         def fetch_goal_info():
-            encrypted_username = User.encrypt_rsa(username)
-            response = self.send_request(f"get_goal|{encrypted_username}!END")
+            enc_user = EncryptedMessage.rsa_encrypt_single(username)
+            response = self.send_request(f"get_goal|{enc_user}!END")
             if response and "|" in response:
                 cal, gtype = response.split("|")
                 if cal.isdigit():
@@ -449,17 +454,17 @@ class SnackSyncApp:
 
             now = datetime.now()
             day, month, year = str(now.day), str(now.month), str(now.year)
-            encrypted_username = User.encrypt_rsa(username)
-            encrypted_calories = User.encrypt_rsa(calories)
-            encrypted_goal_type = User.encrypt_rsa(str(goal_type))
-            encrypted_2fa = User.encrypt_rsa(str(new_2fa))
+            encname = EncryptedMessage.rsa_encrypt_single(username)
+
             print(f" Sending goal update: calories={calories}, type={goal_type}, 2FA={new_2fa}")
-            print(f"enc 2fa= {encrypted_2fa}")
 
             def send_for_save():
-                self.send_request(f"update_goal|{encrypted_username}|{encrypted_calories}|{encrypted_goal_type}|{day}|{month}|{year}!END")
-                self.send_request(f"update_2fa|{encrypted_username}|{encrypted_2fa}!END")
-                self.send_request(f"update_clippy_interval|{username}|{notification_text}!END")
+                if calories.isdigit() and goal_type in (0, 1):
+                    self.send_request(f"update_goal|{encname}|{calories}|{goal_type}|{day}|{month}|{year}!END")
+                elif calories or goal_type != -1:
+                    pass
+                self.send_request(f"update_2fa|{encname}|{new_2fa}!END")
+                self.send_request(f"update_clippy_interval|{encname}|{notification_text}!END")
                 messagebox.showinfo("Saved", "Settings updated successfully.")
                 self.reminder_loop(int(notification_text))
 
@@ -484,10 +489,8 @@ class SnackSyncApp:
             try:
                 print("Connecting to server to log snack")
 
-                snack = EncryptedSnack(username, snack_name, int(calories), "rsa_public.pem")
-                enc_snack, enc_calories = snack.encrypt()
-                enc_username = User.encrypt_rsa(username)
-
+                all = EncryptedMessage(username,snack_name, calories)
+                enc_username, enc_snack, enc_calories = all.rsa_encrypt_all()
                 data = f"log_snack|{enc_username}|{enc_snack}|{enc_calories}|{day}|{month}|{year}!END"
                 response = self.send_request(data)
                 print("Server response:", response)
@@ -534,12 +537,14 @@ class SnackSyncApp:
 
         def send_delete():
             try:
-                message = f"delete_snack|{username}|{snack_name.strip()}|{calories}|{day}|{month}|{year}!END"
+                msg = EncryptedMessage(username,snack_name, calories)
+                enc_user, enc_snack, enc_kcal = msg.rsa_encrypt_all()
+                message = f"delete_snack|{enc_user}|{enc_snack}|{enc_kcal}|{day}|{month}|{year}!END"
                 print("Sending delete message:", message)
                 response = self.send_request(message).strip()
 
                 if response == "OK":
-                    print("Snack deleted successfully.")
+                    print("Snack deleted .")
                     self.root.after(0, lambda: [self.update_total_calories(username)])
                     self.root.after(0, lambda: [self.display_snacks(username)])
                 else:
@@ -564,7 +569,8 @@ class SnackSyncApp:
 
         def fetch_stats():
             try:
-                response = self.send_request(f"get_stats|{username}!END")
+                enc_user = EncryptedMessage.rsa_encrypt_single(username)
+                response = self.send_request(f"get_stats|{enc_user}!END")
             except Exception as e:
                 self.root.after(0, lambda: until_stats.configure(text=f"Error: {e}"))
                 return
@@ -669,16 +675,15 @@ class SnackSyncApp:
         goal_entry = ctk.CTkEntry(self.root)
         goal_entry.pack(pady=5)
         selected_type = tk.IntVar(value=-1)
-
+        enc_user = EncryptedMessage.rsa_encrypt_single(username)
         def get_goal_info():
-            encrypted_username = User.encrypt_rsa(username)
 
             day = self.day_var.get()
             month = self.month_var.get()
             year = self.year_var.get()
 
             print(f"goal for date {day}/{month}/{year}")
-            response = self.send_request(f"get_goal_date|{encrypted_username}|{day}|{month}|{year}!END")
+            response = self.send_request(f"get_goal_date|{enc_user}|{day}|{month}|{year}!END")
             print(f"goaal response = {response}")
 
             if response and "|" in response:
@@ -733,13 +738,11 @@ class SnackSyncApp:
             month = self.month_var.get()
             year = self.year_var.get()
 
-            encrypted_username = User.encrypt_rsa(username)
-            encrypted_calories = User.encrypt_rsa(calories)
-            encrypted_goal_type = User.encrypt_rsa(str(goal_type))
+
             print(f"sending goal update: calories={calories}, type={goal_type}")
 
             def actual_save():
-                self.send_request(f"update_goal|{encrypted_username}|{encrypted_calories}|{encrypted_goal_type}|{day}|{month}|{year}!END")
+                self.send_request(f"update_goal|{enc_user}|{calories}|{goal_type}|{day}|{month}|{year}!END")
                 messagebox.showinfo("Saved", "Goal logged successfully.")
 
             threading.Thread(target=actual_save).start()
@@ -761,8 +764,10 @@ class SnackSyncApp:
             day = self.day_var.get()
             month = self.month_var.get()
             year = self.year_var.get()
+            enc = EncryptedMessage(username)
+            enc_user = EncryptedMessage.rsa_encrypt_single(username)
 
-            msg = f"get_total|{username}|{day}|{month}|{year}!END"
+            msg = f"get_total|{enc_user}|{day}|{month}|{year}!END"
             print("update_total_calories sending:")
             total = self.send_request(msg).strip()
 
@@ -780,7 +785,9 @@ class SnackSyncApp:
             day = self.day_var.get()
             month = self.month_var.get()
             year = self.year_var.get()
-            enc_user = User.encrypt_rsa()
+            enc = EncryptedMessage(username)
+            enc_user = enc.rsa_encrypt_single(username) #it returns it as a list if you dont add,
+
             message= f"get_snacks|{enc_user}|{day}|{month}|{year}!END"
             print("display_snacks sending:", message)
 

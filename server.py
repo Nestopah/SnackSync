@@ -2,7 +2,6 @@
 import socket
 import sqlite3
 import threading
-from user import User
 import bcrypt
 import time
 from Crypto.PublicKey import RSA
@@ -11,7 +10,8 @@ import base64
 from CountryDetector import CountryDetector
 import smtplib
 import secrets
-from dbmanager import DBManager
+from dbmanager import DBDBugger
+from encryptedmessage import EncryptedMessage
 
 ip_times_of_conn= {} # when  a specific ip logged
 RATE_LIMIT_WINDOW = 1
@@ -28,7 +28,7 @@ server.bind((SERVER_HOST, SERVER_PORT))
 server.listen(5)
 print(f"Server listening on {SERVER_HOST}:{SERVER_PORT}")
 
-db = DBManager()
+db = DBDBugger()
 
 
 def start_udp_discovery_server():
@@ -64,26 +64,34 @@ def start_udp_discovery_server():
 
 
 def login(id, password):
-    print("entered id =", id)
-    if "@" in id:
+    try:
+        decrypted = decrypt_field(id)
+        print(f"Decrypted ID: {decrypted}")
+        print("[ Encrypted id =", id)
+    except Exception as e:
+        print("decrypt_field failed in login:", e)
+        return None
+
+    is_email = "@" in decrypted
+
+    if is_email:
         username = db.get_username_by_email(id)
-        if not username:
-            print("Email not found in DB")
-            return None
     else:
         username = id
-    hash_in_db = db.get_user_password(username)
-    if hash_in_db:
-        stored_hash = hash_in_db.encode()
-        if bcrypt.checkpw(password.encode(), stored_hash):
-            print("password correct in login for", username)
-            return username
-        else:
-            print("Invalid password")
-            return None #false would cause problems in handle client because it would see username as a boolean
-    else:
+
+    if not username:
         print("User not found")
         return None
+
+    hash_in_db = db.get_user_password(username)
+    if hash_in_db and bcrypt.checkpw(password.encode(), hash_in_db.encode()):
+        print(f" Password correct for {username}")
+        return username
+    else:
+        print("Invalid credentials")
+        return None
+
+
 
 
 def verify_2fa_code(username, submitted_code):
@@ -103,12 +111,16 @@ def verify_2fa_code(username, submitted_code):
         return False
 
 
-def decrypt_field(encrypted_base64):
-    with open("rsa_private.pem", "rb") as f:
-        key = RSA.import_key(f.read())
-        cipher = PKCS1_OAEP.new(key)
-    raw = base64.b64decode(encrypted_base64)
-    return cipher.decrypt(raw).decode()
+def decrypt_field(possible_encrypted):
+    try:
+        raw = base64.b64decode(possible_encrypted)
+        with open("rsa_private.pem", "rb") as f:
+            key = RSA.import_key(f.read())
+            cipher = PKCS1_OAEP.new(key)
+        return cipher.decrypt(raw).decode()
+    except Exception as e:
+        print("decrypt_field error", e)
+        return None
 
 def send_email(to_email, code):
     print("send email activated")
@@ -121,26 +133,26 @@ def send_email(to_email, code):
         server.sendmail(my_email, to_email, message)
 
 
-def signup(encrypted_username, encrypted_password, encrypted_email):
+def signup(encrypted_username, password, encrypted_email): #password is hashed in clienttera
     try:
         print("sign  up activated")
         username = decrypt_field(encrypted_username)
-        password = decrypt_field(encrypted_password)
         email = decrypt_field(encrypted_email)
 
-        print(f"decryp username: {username} decryp pass: {password} decryp email: {email}")
+        print(f"decryp username: {username} hashed pass: {password} decryp email: {email}")
 
-        # generate code for 2fa
+
         code = ''.join(secrets.choice("0123456789") for _ in range(6))
         all_2fa_codes[username] = (code, time.time() + 300)
+        print(code)
 
         print("Email sent tera")
         send_email(email, code)
-
+        both = EncryptedMessage(username,email)
+        enc_user,enc_email = both.rsa_encrypt_all()
         def add_user():
             try:
-                hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-                db.insert_user(username, hashed_password, email)
+                db.insert_user(enc_user, password, enc_email)
             except Exception as e:
                 print(f"adding user failed")
 
@@ -194,30 +206,32 @@ def handle_client(client_socket):
         # Only send ACK for old-style operations
 
         if op == "login":
-            if len(parts) == 3:
-                username = parts[1]
-                password = parts[2]
-                result = login(username, password)
+            if len(args) == 2:
+                encrypted_id = args[0]
+                password = args[1]
+
+                result = login(encrypted_id, password)
                 if result:
                     username = result
                     if db.get_2fa(username) == 1:
                         print(" 2FA is enabled")
-
                         email = db.get_email(username)
+                        email = decrypt_field(email)
                         if email:
                             code = ''.join(secrets.choice("0123456789") for _ in range(6))
                             all_2fa_codes[username] = (code, time.time() + 300)
                             send_email(email, code)
                             client_socket.send(f"2FA|{username}".encode())
                         else:
-                            print("No email")
+                            print("[LOGIN] No email found")
                             client_socket.send(b"FAIL")
                     else:
-                        client_socket.send(username.encode()) #bcuz email can get used in the client
+                        client_socket.send(username.encode())
                 else:
                     client_socket.send(b"FAIL")
             else:
                 client_socket.send(b"FAIL")
+
 
         elif op == "register":
             if len(args) == 3:
@@ -233,8 +247,6 @@ def handle_client(client_socket):
                 username, snack, calories, day, month, year = args
                 print("log snack activated")
                 try:
-                    username = decrypt_field(username)
-                    snack = decrypt_field(snack)
                     calories = decrypt_field(calories)
                     add_snack(username, snack, calories, int(day), int(month), int(year))
                     client_socket.send(b"OK")
@@ -249,7 +261,9 @@ def handle_client(client_socket):
             try:
                 if len(args) == 6:
                     username, snack, calories, day, month, year = args
-                    calories = int(calories)
+                    username = decrypt_field(username)
+                    snack = decrypt_field(snack)
+                    calories = decrypt_field(calories)
                     day, month, year = int(day), int(month), int(year)
                     delete_snack(username, snack, calories, day, month, year)
                     client_socket.send(b"OK")
@@ -263,7 +277,6 @@ def handle_client(client_socket):
             try:
                 if len(args) == 4:
                     username, day, month, year = args
-                    username = User.decrypt_rsa(username)
                     print(f"[DEBUG] Get snacks for {username} on {day}/{month}/{year}")
                     rows = db.get_snacks(username, int(day), int(month), int(year))
                     if not rows:
@@ -285,7 +298,6 @@ def handle_client(client_socket):
                 if len(args) == 4:
                     username, day, month, year = args
                     total = get_total_calories(username, int(day), int(month), int(year))
-                    print(f"Total calculated for {username} on {day}/{month}/{year} = {total}")
                     client_socket.send(str(total).encode())
                     print(f"Sent total: {total}")
                 else:
@@ -297,6 +309,7 @@ def handle_client(client_socket):
             try:
                 if len(args) == 1:
                     username = args[0]
+                    username = decrypt_field(username)
                     print(f"Getting stats for {username}")
                     history = db.get_stats(username) #all user snack history for all days
                     if not history:
@@ -335,6 +348,7 @@ def handle_client(client_socket):
         elif op == "check2fa":
             if len(args) == 2:
                 username, submitted_code = args
+                username = decrypt_field(username)
                 if verify_2fa_code(username, submitted_code):
                     print("2FA login works")
                     client_socket.send(b"OK")
@@ -349,7 +363,6 @@ def handle_client(client_socket):
                 username, value = args
                 try:
                     username = decrypt_field(username)
-                    value = decrypt_field(value)
                     db.update_2fa(username, value)
                     client_socket.send(b"OK")
                     print("update 2fa succeeded")
@@ -363,8 +376,12 @@ def handle_client(client_socket):
                 enc_user_id, hashed_password = args
                 try:
                     user_id = decrypt_field(enc_user_id)
-                    print(f"Decrypted user_id: {user_id}")
-                    email = db.get_email(user_id)
+                    if "@" in user_id:
+                        real_username = db.get_username_by_email(user_id)
+                    else:
+                        real_username = user_id
+                    email = db.get_email(real_username)
+                    email = decrypt_field(email)
                     if email:
                         try:
                             code = ''.join(secrets.choice("0123456789") for _ in range(6))
@@ -390,7 +407,12 @@ def handle_client(client_socket):
         elif op == "reset_verify":
             if len(args) == 3:
                 user_id, new_password, submitted_code = args
-                if verify_2fa_code(user_id, submitted_code):
+                decryp_id = decrypt_field(user_id)
+                if "@" in decryp_id:
+                    real_username = db.get_username_by_email(user_id)
+                else:
+                    real_username = decryp_id
+                if verify_2fa_code(real_username, submitted_code):
                     updated = db.update_user_password(user_id, new_password)
                     if updated:
                         client_socket.send(b"OK")
@@ -426,12 +448,11 @@ def handle_client(client_socket):
             if len(args) == 1:
                 try:
                     encrypted_username = args[0]
-                    username = decrypt_field(encrypted_username)
 
                     now = time.localtime()
                     day, month, year = now.tm_mday, now.tm_mon, now.tm_year
 
-                    result = db.get_goal_for_date(username, day, month, year)
+                    result = db.get_goal_for_date(encrypted_username, day, month, year)
 
                     if result:
                         goal_calories, goal_type = result
@@ -474,9 +495,8 @@ def handle_client(client_socket):
             if len(args) == 4:
                 try:
                     encrypted_username, day, month, year = args
-                    username = decrypt_field(encrypted_username)
                     day, month, year = int(day), int(month), int(year)
-                    result = db.get_goal_for_date(username, day, month, year)
+                    result = db.get_goal_for_date(encrypted_username, day, month, year)
                     if result:
                         goal_calories, goal_type = result
                         response = f"{goal_calories}|{goal_type}"
@@ -492,9 +512,6 @@ def handle_client(client_socket):
             else:
                 print("invalid get_goal_date arguments:", args)
                 client_socket.send(b"error")
-        elif op == "get_ip":
-            local_ip = get_local_ip()
-            client_socket.send(local_ip.encode())
 
         else:
             print("error with if op == ")
