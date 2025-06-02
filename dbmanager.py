@@ -1,18 +1,21 @@
 import sqlite3
 import time
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 class DBManager:
-    def __init__(self, db_name="snacksync.db"):
-        self.db_name = db_name
+    def __init__(self, db_name=None):
+        self.db_name = db_name or os.getenv("DB_PATH", "snacksync.db")
         self.init_db()
 
     def init_db(self):
         start = time.time()
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
+
             cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-                                username TEXT UNIQUE,
+                                username TEXT PRIMARY KEY,
                                 password TEXT,
                                 email TEXT,
                                 enable_2fa INTEGER DEFAULT 0,
@@ -33,48 +36,46 @@ class DBManager:
                                 goal_type INTEGER,
                                 day INTEGER,
                                 month INTEGER,
-                                year INTEGER)''')
+                                year INTEGER,
+                                PRIMARY KEY (username, day, month, year))''')
 
             conn.commit()
-        print(f"[DB] Database created (took {time.time() - start:.3f} sec)")
 
     def insert_user(self, username, password, email):
         try:
-            with sqlite3.connect(self.db_name, timeout=5) as conn:
+            with sqlite3.connect(self.db_name) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''INSERT INTO users (username, password, email)
                                   VALUES (?, ?, ?)''',
                                (username, password, email))
                 conn.commit()
         except sqlite3.OperationalError as e:
-            print("[DB ERROR] insert_user:", e)
             raise
 
     def get_user_password(self, username):
-        print(f"[DB] get_user_password start for {username}")
+
         start = time.time()
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT password FROM users WHERE username = ?", (username,))
             result = cursor.fetchone()
-        print(f"[DB] get_user_password end for {username} (took {time.time() - start:.3f} sec)")
         return result[0] if result else None
 
     def get_2fa(self, username):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT enable_2fa FROM users WHERE username = ?", (username,))
             result = cursor.fetchone()
             return result[0] if result else 0
 
     def update_2fa(self, username, value):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET enable_2fa = ? WHERE username = ?", (value, username))
             conn.commit()
 
     def get_email(self, username):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT email FROM users WHERE username = ?", (username,))
             result = cursor.fetchone()
@@ -82,7 +83,7 @@ class DBManager:
 
     def update_user_password(self, identifier, new_password):
         try:
-            with sqlite3.connect(self.db_name, timeout=5) as conn:
+            with sqlite3.connect(self.db_name) as conn:
                 cursor = conn.cursor()
                 cursor.execute("UPDATE users SET password = ? WHERE username = ?", (new_password, identifier))
                 if cursor.rowcount == 0:
@@ -90,36 +91,30 @@ class DBManager:
                 conn.commit()
                 return cursor.rowcount > 0
         except Exception as e:
-            print("[DB ERROR] update_user_password:", e)
             return False
 
     def insert_snack(self, username, snack, calories, day, month, year):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
-            cursor.execute('''INSERT INTO snacks (username, snack, calories, day, month, year)
-                              VALUES (?, ?, ?, ?, ?, ?)''',
-                           (username, snack, calories, day, month, year))
+            cursor.execute('''INSERT INTO snacks (username, snack, calories, day, month, year) VALUES (?, ?, ?, ?, ?, ?)''',(username, snack, calories, day, month, year))
             conn.commit()
 
     def get_total_calories(self, username, day, month, year):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
-            cursor.execute('''SELECT SUM(calories) FROM snacks
-                              WHERE username = ? AND day = ? AND month = ? AND year = ?''',
-                           (username, day, month, year))
+            cursor.execute('''SELECT SUM(calories) FROM snacks WHERE username = ? AND day = ? AND month = ? AND year = ?''',(username, day, month, year))
             result = cursor.fetchone()
             return result[0] if result[0] is not None else 0
 
     def get_snacks(self, username, day, month, year):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
-            cursor.execute('''SELECT snack, calories FROM snacks
-                              WHERE username = ? AND day = ? AND month = ? AND year = ?''',
+            cursor.execute('''SELECT snack, calories FROM snacks WHERE username = ? AND day = ? AND month = ? AND year = ?''',
                            (username, day, month, year))
             return cursor.fetchall()
 
     def get_stats(self, username):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute('''SELECT day, month, year, SUM(calories) as total
                               FROM snacks
@@ -130,7 +125,7 @@ class DBManager:
             return cursor.fetchall()
 
     def update_goals(self, username, goal_calories, goal_type, day, month, year):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             # Delete existing goal entry for that day
             cursor.execute('''DELETE FROM goals 
@@ -143,7 +138,7 @@ class DBManager:
             conn.commit()
 
     def get_goal_for_date(self, username, day, month, year):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT goal_calories, goal_type FROM goals
@@ -155,7 +150,7 @@ class DBManager:
             return cursor.fetchone()
 
     def delete_snack(self, username, snack, calories, day, month, year):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
 
             # Step 1: Get one matching rowid
@@ -171,96 +166,34 @@ class DBManager:
                 conn.commit()
 
     def update_interval(self, username, interval_minutes):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET clippy_interval = ? WHERE username = ?", (interval_minutes, username))
             conn.commit()
 
     def get_interval(self, username):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT clippy_interval FROM users WHERE username = ?", (username,))
             result = cursor.fetchone()
             return result[0] if result and result[0] not in (None, 0) else 60 #no crashes anymore
 
     def get_username_by_email(self, email):
-        with sqlite3.connect(self.db_name, timeout=5) as conn:
+        with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT username FROM users WHERE email = ?", (email,))
             result = cursor.fetchone()
             return result[0] if result else None
 
-class DBDBugger(DBManager):
-    def log(self, func_name, *args):
-        message = (f"DBLOG {func_name}: ")
-        parts = []
-        i = 0
-        for arg in args:
-            parts.append(str(arg))
-            i += 1
-        message += " | ".join(parts)
-        print(message)
+    def username_exists(self, username):
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM users WHERE username = ?", (username,))
+            return cursor.fetchone() is not None
 
-    def insert_user(self, username, password, email):
-        self.log("insert_user", username, password, email)
-        return super().insert_user(username, password, email)
+    def email_exists(self, email):
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM users WHERE email = ?", (email,))
+            return cursor.fetchone() is not None
 
-    def get_user_password(self, username):
-        self.log("get_user_password", username)
-        return super().get_user_password(username)
-
-    def get_2fa(self, username):
-        self.log("get_2fa", username)
-        return super().get_2fa(username)
-
-    def update_2fa(self, username, value):
-        self.log("update_2fa", username, value)
-        return super().update_2fa(username, value)
-
-    def get_email(self, username):
-        self.log("get_email", username)
-        return super().get_email(username)
-
-    def update_user_password(self, identifier, new_password):
-        self.log("update_user_password", identifier, new_password)
-        return super().update_user_password(identifier, new_password)
-
-    def insert_snack(self, username, snack, calories, day, month, year):
-        self.log("insert_snack", username, snack, calories, day, month, year)
-        return super().insert_snack(username, snack, calories, day, month, year)
-
-    def get_total_calories(self, username, day, month, year):
-        self.log("get_total_calories", username, day, month, year)
-        return super().get_total_calories(username, day, month, year)
-
-    def get_snacks(self, username, day, month, year):
-        self.log("get_snacks", username, day, month, year)
-        return super().get_snacks(username, day, month, year)
-
-    def get_stats(self, username):
-        self.log("get_stats", username)
-        return super().get_stats(username)
-
-    def update_goals(self, username, goal_calories, goal_type, day, month, year):
-        self.log("update_goals", username, goal_calories, goal_type, day, month, year)
-        return super().update_goals(username, goal_calories, goal_type, day, month, year)
-
-    def get_goal_for_date(self, username, day, month, year):
-        self.log("get_goal_for_date", username, day, month, year)
-        return super().get_goal_for_date(username, day, month, year)
-
-    def delete_snack(self, username, snack, calories, day, month, year):
-        self.log("delete_snack", username, snack, calories, day, month, year)
-        return super().delete_snack(username, snack, calories, day, month, year)
-
-    def update_interval(self, username, interval_minutes):
-        self.log("update_interval", username, interval_minutes)
-        return super().update_interval(username, interval_minutes)
-
-    def get_interval(self, username):
-        self.log("get_interval", username)
-        return super().get_interval(username)
-
-    def get_username_by_email(self, email):
-        self.log("get_username_by_email", email)
-        return super().get_username_by_email(email)

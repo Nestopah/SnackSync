@@ -1,4 +1,3 @@
-
 import socket
 import customtkinter as ctk
 import tkinter as tk
@@ -6,14 +5,19 @@ from tkinter  import messagebox
 from datetime import datetime
 import threading
 from clippy import Clippy
-from encryptedmessage import EncryptedMessage
+from encryptedmessage import EncryptedMessage, LoginMessage, RegisterMessage, LogSnackMessage, DeleteSnackMessage
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
+DISCOVERY_PORT = int(os.getenv("DISCOVERY_PORT", 54545))
+DISCOVERY_WORD = os.getenv("DISCOVERY_WORD", "SNACKSYNC")
+DISCOVERY_VERSION = os.getenv("DISCOVERY_VERSION", "v1.0")
+SERVER_PORT = int(os.getenv("SERVER_PORT", 12345))
+ICON = os.getenv("ICON_PATH", "icon.ico")
 
 
 def discover_server_ip():
-    DISCOVERY_PORT = 54545
-    DISCOVERY_WORD = "SNACKSYNC"
-    DISCOVERY_VERSION = "v1.0"
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -34,18 +38,17 @@ def discover_server_ip():
         return None
 
 SERVER_HOST = discover_server_ip()
-SERVER_PORT = 12345
 if not SERVER_HOST:
     boot = ctk.CTk()
     boot.withdraw()
-    messagebox.showerror("Connection Error", "Could not find SnackSync server on the network.\nGoodbye.")
+    messagebox.showerror("Connection Error", "Could not find SnackSync server.\nGoodbye.")
     exit()
 
 class SnackSyncApp:
     def __init__(self, root):
         self.root = root
         try:
-            self.root.iconbitmap("icon.ico")
+            self.root.iconbitmap(ICON)
         except Exception as e:
             pass
         self.root.title("SnackSync - Login/Register")
@@ -62,13 +65,11 @@ class SnackSyncApp:
 
         ctk.CTkButton(root, text="Login", command=self.login).pack(pady=5)
         ctk.CTkButton(root, text="Sign up", command=self.register).pack(pady=5)
-       ## bg_color = self.root._apply_appearance_mode(ctk.ThemeManager.theme["CTk"]["fg_color"])
-       ##print(bg_color)
         ctk.CTkButton(self.root, text="Forgot password?", text_color="#66B2FF", fg_color="gray14", hover_color="gray14", border_width=0, command=self.open_password_reset).pack()
 
     def login(self):
         def login_thread():
-            id = self.id_CTkEntry.get().strip()  # can be username or email
+            id = self.id_CTkEntry.get().strip()
             password = self.password_CTkEntry.get().strip()
 
             if not id or not password:
@@ -77,10 +78,7 @@ class SnackSyncApp:
             if self.possible_injections(id, allow_email=True):
                 return
 
-            encmsg = EncryptedMessage(id,password)
-            enc_id,enc_pass = encmsg.rsa_encrypt_all()
-
-            message = f"login|{enc_id}|{enc_pass}!END"
+            message = LoginMessage(id, password).build()
             response = self.send_request(message)
 
             if response.startswith("2FA|"):
@@ -92,7 +90,7 @@ class SnackSyncApp:
                 self.root.after(0, lambda: messagebox.showerror("Error", "Login failed."))
         threading.Thread(target=login_thread).start()
 
-    def possible_injections(self, text, allow_email=False):
+    def possible_injections(self, text, allow_email=False): #dont allow chrs that can be used in sqlinjection
         suspicious = ["'", '"', "=", "--", ";", " or ", " and ", "<", ">", "\\", "/*", "*/"]
         if not allow_email:
             suspicious.append("@")
@@ -102,12 +100,37 @@ class SnackSyncApp:
                 return True
         return False
 
+    def is_strong_password(self, password): #check if password is strong, for cyber defense and security
+        if len(password) < 8:
+            messagebox.showerror("Weak Password", "Password must be at least 8 characters long.")
+            return False
+        has_upper = False
+        has_lower = False
+        has_digit = False
+        for char in password:
+            if char.isupper():
+                has_upper = True
+            elif char.islower():
+                has_lower = True
+            elif char.isdigit():
+                has_digit = True
+        if not has_upper:
+            messagebox.showerror("Weak Password", "Password must include at least one uppercase letter.")
+            return False
+        if not has_lower:
+            messagebox.showerror("Weak Password", "Password must include at least one lowercase letter.")
+            return False
+        if not has_digit:
+            messagebox.showerror("Weak Password", "Password must include at least one number.")
+            return False
+        return True
+
     def register(self):
         self.clear_root()
 
         self.root.title("SnackSync - Sign up")
         self.root.geometry("300x400")
-        self.center_window(self.root, 300, 400)
+        self.center_window(self.root, 300, 300)
 
 
         ctk.CTkLabel(self.root, text="Username:").pack(pady=5)
@@ -139,52 +162,52 @@ class SnackSyncApp:
                 return
             if self.possible_injections(email,True):
                 return
+            if not self.is_strong_password(password):
+                return
             try:
-                msg = EncryptedMessage(username,email, password)
-                enc_username, enc_email, password = msg.rsa_encrypt_all()
+                message = RegisterMessage(username, email, password).build()
 
             except Exception as e:
-                messagebox.showerror("Error", f"Signup failed:\n{e}")
+                messagebox.showerror("Error", f"{e}")
                 return
-
-            message = f"register|{enc_username}|{password}|{enc_email}!END"
-            print("smg sending to server:", message)
 
             def handle_responses():
                 response = self.send_request(message)
                 if response == "2FA":
-                    self.root.after(0, lambda: [messagebox.showinfo("Verification", "Check your email for a 6-digit code."),self.show_2fa_prompt(username)])
+                    self.root.after(0, lambda: [messagebox.showinfo("Verification", "Check your email for a 6-digit code."),self.show_2fa_prompt(username,None,True)])
                 elif response == "FAIL":
-                    self.root.after(0, lambda: messagebox.showerror("Error", "Username or email already exists."))
+                    self.root.after(0,lambda:messagebox.showerror("Error", f"Signup failed."))
+                elif response == "EXIST":
+                    self.root.after(0, lambda: messagebox.showerror("Error", f"Username or email already exist."))
                 else:
-                    self.root.after(0, lambda: messagebox.showerror("Error", f"Unexpected error: {response}"))
+                    self.root.after(0, lambda: messagebox.showerror("Error", f"Unexpected error"))
 
             threading.Thread(target=handle_responses).start()
         ctk.CTkButton(root, text="Create account", command=lambda: threading.Thread(target=submit_signup).start()).pack(pady=20)
 
-    def show_2fa_prompt(self, username, newpass=None):
+    def show_2fa_prompt(self, username, newpass=None,register = False):
         self.clear_root()
-        self.root.title("Two-Factor authentication")
+        self.root.title("Two Factor authentication")
         self.root.geometry("300x200")
         self.center_window(self.root, 300, 200)
 
-        ctk.CTkLabel(self.root, text="Enter the 6-digit code sent to your email").pack(pady=10)
+        ctk.CTkLabel(self.root, text="Enter the 6 digit code sent to your email").pack(pady=10)
         code_entry = ctk.CTkEntry(self.root)
         code_entry.pack(pady=10)
 
         def submit_code():
             code = code_entry.get().strip()
             if not code.isdigit() or len(code) != 6:
-                messagebox.showerror("Error", "Enter a valid 6-digit code.")
+                messagebox.showerror("Error", "Enter a valid 6 digit code.")
                 return
-            print(code)
+            enc_user = EncryptedMessage.rsa_encrypt_single(username)
+
             if newpass:
-                enc_user = EncryptedMessage.rsa_encrypt_single(username) #newpass already encrypted
                 message = f"reset_verify|{enc_user}|{newpass}|{code}!END"
+            elif register:
+                message = f"verify_register|{enc_user}|{code}!END"
             else:
-                enc_user = EncryptedMessage.rsa_encrypt_single(username)
                 message = f"check2fa|{enc_user}|{code}!END"
-                print("check2fa")
 
             response = self.send_request(message)
             if response == "OK":
@@ -197,12 +220,10 @@ class SnackSyncApp:
 
     def send_request(self, message):
         try:
-            print("send_request")
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.connect((SERVER_HOST, SERVER_PORT))
                 sock.sendall(message.encode())
                 response = sock.recv(1024).decode()
-                print(f"response = {response} ")
                 if response == "BUSY":
                     messagebox.showerror("Error", "Server is busy. Try again later.")
                     return "FAIL"
@@ -243,6 +264,8 @@ class SnackSyncApp:
             if password != confirm:
                 self.root.after(0, lambda: messagebox.showerror("Error", "Passwords do not match."))
                 return
+            if not self.is_strong_password(password):
+                return
             try:
                 if "@" in user_id:
                     real_username = self.get_username_from_id(user_id)
@@ -252,12 +275,9 @@ class SnackSyncApp:
                 encrypted_password = EncryptedMessage.rsa_encrypt_single(password)
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("Error"))
-                print("send and handle didnt work")
                 return
 
-
             message = f"reset_pass|{encrypted_user_id}|{encrypted_password}!END"
-            print("Sending reset message:", message)
             response = self.send_request(message).strip()
 
             if response == "OK":
@@ -272,7 +292,7 @@ class SnackSyncApp:
 
     def get_username_from_id(self, user_id):
         if "@" not in user_id:
-            return user_id  # already username
+            return user_id
         encrypted_email = EncryptedMessage.rsa_encrypt_single(user_id)
         response = self.send_request(f"get_username_from_email|{encrypted_email}!END")
         if response and response != "FAIL":
@@ -288,10 +308,9 @@ class SnackSyncApp:
 
     def reminder_loop(self, interval_minutes):
         try:
-            self.clippy_timer.cancel() #ignore warning it gets pass later
-        except AttributeError: #dexteruchi
+            self.clippy_timer.cancel()
+        except AttributeError: #if no clippy timer ignore error and make new one
             pass
-
         def loop():
             self.clippy.notification("SnackSync", "Don't forget to log your snacks!")
             self.clippy_timer = threading.Timer(interval_minutes * 60, loop)
@@ -305,14 +324,14 @@ class SnackSyncApp:
             widget.destroy()
 
     def open_main_screen(self, username):
-        self.clear_root()  # remove old login widgets
+        self.clear_root()
 
         self.root.title(f"SnackSync - Main window {username}")
         self.root.geometry("500x600")
         self.center_window(self.root, 500, 700)
 
         self.clippy = Clippy()
-        self.fetch_clippy_interval(username)  # start reminder loop
+        self.fetch_clippy_interval(username)
 
 
         ctk.CTkLabel(self.root, text=f"Welcome, {username}!", font=("Arial", 24)).pack(pady=10)
@@ -349,23 +368,21 @@ class SnackSyncApp:
 
     def logout(self):
         self.clear_root()
-        self.__init__(self.root)  #yog
+        self.__init__(self.root)
 
-    def fetch_clippy_interval(self, username, entry_box=None): #flippy
+    def fetch_clippy_interval(self, username, entry_box=None):
         enc_user = EncryptedMessage.rsa_encrypt_single(username)
         def get_interval():
             try:
                 response = self.send_request(f"get_clippy_interval|{enc_user}!END")
                 if response.isdigit():
                     interval = int(response)
-                    print(f"interval = {interval}")
                     if entry_box:
                         entry_box.insert(0, str(interval))
                     else:
                         self.reminder_loop(interval)
             except Exception as e:
-                print(" Failed to fetch clippy_interval:", e)
-
+                pass
         threading.Thread(target=get_interval).start()
 
     def open_settings(self, username):
@@ -380,7 +397,6 @@ class SnackSyncApp:
         def get_curr_2fa():
             enc_user = EncryptedMessage.rsa_encrypt_single(username)
             response = self.send_request(f"get_2fa|{enc_user}!END")
-            print(f"response = {response}")
             def update_checkbox():
                 var.set(response.strip() == "1")
             self.root.after(0, update_checkbox)
@@ -400,9 +416,9 @@ class SnackSyncApp:
 
         selected_type = tk.IntVar(value=-1)
 
-        def update_button_styles():
-            under.configure(fg_color="#1E90FF" if selected_type.get() == 0 else "#ADD8E6",text_color="black") #under
-            over.configure(fg_color="#1E90FF" if selected_type.get() == 1 else "#ADD8E6",text_color="black") #over
+        def update_button_styles(): #configure buttons colors to their status, to indicate to user what is currently chosen (dark = selected)
+            under.configure(fg_color="#1E90FF" if selected_type.get() == 0 else "#ADD8E6",text_color="black")
+            over.configure(fg_color="#1E90FF" if selected_type.get() == 1 else "#ADD8E6",text_color="black")
 
         def select_under():
             selected_type.set(0)
@@ -454,8 +470,6 @@ class SnackSyncApp:
             now = datetime.now()
             day, month, year = str(now.day), str(now.month), str(now.year)
             encname = EncryptedMessage.rsa_encrypt_single(username)
-
-            print(f" Sending goal update: calories={calories}, type={goal_type}, 2FA={new_2fa}")
             enc_cal = EncryptedMessage.rsa_encrypt_single(calories)
             enc_type = EncryptedMessage.rsa_encrypt_single(str(goal_type))
             def send_for_save():
@@ -487,15 +501,10 @@ class SnackSyncApp:
 
         def send_log_snack():
             try:
-                print("Connecting to server to log snack")
-
-                all = EncryptedMessage(username,snack_name, str(calories))
-                enc_username, enc_snack, enc_calories = all.rsa_encrypt_all()
-                data = f"log_snack|{enc_username}|{enc_snack}|{enc_calories}|{day}|{month}|{year}!END"
+                data = LogSnackMessage(username, snack_name, calories, day, month, year).build()
                 response = self.send_request(data)
-                print("Server response:", response)
                 if response == "OK":
-                    print("logged a snack")
+                    pass
                 else:
                     messagebox.showerror("Error", "Could not log snack")
 
@@ -505,18 +514,14 @@ class SnackSyncApp:
                         self.update_total_calories(username)
                         self.snack_CTkEntry.delete(0, ctk.END)
                         self.calories_CTkEntry.delete(0, ctk.END)
-                        print("display updated after snack log .")
                         now = datetime.now()
                         if day == now.day and month == now.month and year == now.year:
                             self.clippy.notify_goal_result(username)
-                        else:
-                            print(" snack logged with log prev days function no need to show notification")
                     except Exception as e:
                         self.root.after(0, lambda: messagebox.showerror(f"Error", f"{e}"))
                 self.root.after(0, update_and_display)
 
             except Exception as e:
-                print(" Failed to log snack:", e)
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to log snack {e}"))
 
         threading.Thread(target=send_log_snack).start()
@@ -537,20 +542,15 @@ class SnackSyncApp:
 
         def send_delete():
             try:
-                msg = EncryptedMessage(username,snack_name, calories)
-                enc_user, enc_snack, enc_kcal = msg.rsa_encrypt_all()
-                message = f"delete_snack|{enc_user}|{enc_snack}|{enc_kcal}|{day}|{month}|{year}!END"
-                print("del request:", message)
+                message = DeleteSnackMessage(username, snack_name, calories, day, month, year).build()
                 response = self.send_request(message).strip()
 
                 if response == "OK":
-                    print("Snack deleted .")
                     self.root.after(0, lambda: [self.update_total_calories(username)])
                     self.root.after(0, lambda: [self.display_snacks(username)])
                 else:
                     self.root.after(0, lambda: messagebox.showerror("Error", "Snack deletion failed."))
             except Exception as e:
-                print("Failed to delete snack:", e)
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to delete snack: {e}"))
 
         threading.Thread(target=send_delete).start()
@@ -561,9 +561,8 @@ class SnackSyncApp:
         self.root.title("Stats")
         self.root.geometry("400x300")
         self.center_window(self.root, 400, 300)
-
-
-        ctk.CTkLabel(self.root, text="All time stats:").pack(pady=10)
+        ctk.CTkButton(self.root, text="Back to main menu", command=lambda: self.open_main_screen(username)).pack(pady=5)
+        ctk.CTkLabel(self.root, text="All time stats:").pack(pady=3)
         until_stats = ctk.CTkLabel(self.root, text="Loading...")
         until_stats.pack()
 
@@ -585,13 +584,13 @@ class SnackSyncApp:
                 goal_reached = 0
                 total_days_logged = 0
 
-                for line in stats:
+                for line in stats: #takes stats and splits them correctly so it displays date, calories, and goal data
                     if ":" not in line:
                         continue
 
                     try:
                         date_part, rest = line.split(":", 1)
-                        parts = rest.split("|", 2)
+                        parts = rest.split("|")
 
                         total_str = parts[0].strip()
                         gcal = parts[1].strip() if len(parts) > 1 else ""
@@ -599,38 +598,36 @@ class SnackSyncApp:
 
                         text = f"{date_part}: {total_str} kcal"
 
-                        if gcal.isdigit() and gtype in ("0", "1"):
-                            total_val = int(total_str)
-                            goal_val = int(gcal)
-                            goal_type= int(gtype)
-
-                            typetera = "under" if goal_type == 0 else "over"
-                            goal_text = f"(goal was {typetera} {goal_val})"
-
-                            goal_succeed = (goal_type == 1 and total_val >= goal_val) or \
-                                       (goal_type == 0 and total_val <= goal_val)
-
-                            if goal_succeed:
-                                text += f"  | Goal reached: Yes {goal_text}"
-                                goal_reached += 1
-                            else:
-                                text += f"  | Goal reached: No {goal_text}"
-
-                            total_days_logged  += 1
-                        else:
+                        if not gcal.isdigit() or gtype not in ("0", "1"):
                             text += "  | No goal set"
-                        ctk.CTkLabel(self.root, text=text).pack(anchor="w", padx=10, pady=2) #left to right
-                    except Exception as e:
-                        print("Error", e)
+                            ctk.CTkLabel(self.root, text=text).pack(anchor="w", padx=10, pady=2)
+                            continue
+
+                        total_val = int(total_str)
+                        goal_val = int(gcal)
+                        goal_type = int(gtype)
+
+                        goal_type_str = "under" if goal_type == 0 else "over"
+                        goal_text = f"(goal was {goal_type_str} {goal_val})"
+
+                        if (goal_type == 1 and total_val >= goal_val) or (goal_type == 0 and total_val <= goal_val):
+                            text += f"  | Goal reached: Yes {goal_text}"
+                            goal_reached += 1
+                        else:
+                            text += f"  | Goal reached: No {goal_text}"
+
+                        total_days_logged += 1
+                        ctk.CTkLabel(self.root, text=text).pack(anchor="w", padx=10, pady=2)
+                    except Exception:
+                        messagebox.showerror("Error", "Failed to display one of the entries.")
                 if total_days_logged > 0:
                     summary = f"You reached your goal {goal_reached} out of {total_days_logged} days."
                     ctk.CTkLabel(root, text=summary, font=("Arial", 12)).pack(pady=10)
             self.root.after(0, show_stats)
-            ctk.CTkButton(self.root, text="Back to main menu", command=lambda: self.open_main_screen(username)).pack()
 
         threading.Thread(target=fetch_stats).start()
 
-    def log_prev_days_window(self, username):
+    def log_prev_days_window(self, username): #all necessary functions for snack logging, in one function to log days which aren't today
         self.clear_root()
 
         self.day_var = ctk.StringVar(value=str(datetime.today().day))
@@ -681,7 +678,6 @@ class SnackSyncApp:
             day = self.day_var.get()
             month = self.month_var.get()
             year = self.year_var.get()
-            print(f"goal for date {day}/{month}/{year}")
             response = self.send_request(f"get_goal_date|{enc_user}|{day}|{month}|{year}!END")
 
             def update_ui():
@@ -690,7 +686,6 @@ class SnackSyncApp:
                 update_button_styles()
                 if response and "|" in response:
                     cal, gtype = response.split("|")
-                    print(f" Parsed: cal={cal}, gtype={gtype}")
                     if cal.isdigit():
                         goal_entry.insert(0, cal)
                     if gtype in ("0", "1"):
@@ -700,14 +695,13 @@ class SnackSyncApp:
             self.root.after(0, update_ui)
 
         def refresh_curr_data(*_):
-            print("refresh_curr_data deltachan")
             self.display_snacks(username)
             self.update_total_calories(username)
             threading.Thread(target=get_goal_info).start()
 
         def update_button_styles():
-            under.configure(fg_color="#1E90FF" if selected_type.get() == 0 else "#ADD8E6", text_color="black")  # under
-            over.configure(fg_color="#1E90FF" if selected_type.get() == 1 else "#ADD8E6", text_color="black")  # over
+            under.configure(fg_color="#1E90FF" if selected_type.get() == 0 else "#ADD8E6", text_color="black")
+            over.configure(fg_color="#1E90FF" if selected_type.get() == 1 else "#ADD8E6", text_color="black")
 
         def select_under():
             selected_type.set(0)
@@ -743,11 +737,8 @@ class SnackSyncApp:
 
             enc_cal = EncryptedMessage.rsa_encrypt_single(calories)
             if enc_cal is None:
-                print("no")
                 return
             enc_type = EncryptedMessage.rsa_encrypt_single(str(goal_type))
-            print(f"sending goal update: calories={calories} type={enc_type} user = {enc_user}")
-
             def actual_save():
                 self.send_request(f"update_goal|{enc_user}|{enc_cal}|{enc_type}|{day}|{month}|{year}!END")
                 messagebox.showinfo("Saved", "Goal logged successfully.")
@@ -761,10 +752,10 @@ class SnackSyncApp:
         self.display_snacks(username)
         self.update_total_calories(username)
 
-        self.day_var.trace_add("write", refresh_curr_data) #refresh ui when user adds anything
+        self.day_var.trace_add("write", refresh_curr_data)
         self.month_var.trace_add("write", refresh_curr_data)
         self.year_var.trace_add("write", refresh_curr_data)
-        day_box.bind("<<ComboboxSelected>>", lambda e: refresh_curr_data()) #refresh ui when user selects date because the trace add doesnt work sometimes when you select
+        day_box.bind("<<ComboboxSelected>>", lambda e: refresh_curr_data())
         month_box.bind("<<ComboboxSelected>>", lambda e: refresh_curr_data())
         year_box.bind("<<ComboboxSelected>>", lambda e: refresh_curr_data())
 
@@ -780,7 +771,6 @@ class SnackSyncApp:
             enc_user = EncryptedMessage.rsa_encrypt_single(username)
 
             msg = f"get_total|{enc_user}|{day}|{month}|{year}!END"
-            print("update_total_calories sending:")
             total = self.send_request(msg).strip()
 
             def update_label():
@@ -798,12 +788,8 @@ class SnackSyncApp:
             day = self.day_var.get()
             month = self.month_var.get()
             year = self.year_var.get()
-            enc = EncryptedMessage(username)
-            enc_user = enc.rsa_encrypt_single(username) #it returns it as a list if you dont add,
-
+            enc_user = EncryptedMessage.rsa_encrypt_single(username)
             message= f"get_snacks|{enc_user}|{day}|{month}|{year}!END"
-            print("display_snacks sending:", message)
-
             snack_list = self.send_request(message).strip()
 
             def update_listbox():
@@ -820,4 +806,3 @@ if __name__ == "__main__":
     root = ctk.CTk()
     app = SnackSyncApp(root)
     root.mainloop()
-##gwahjigwahiogoaiwhgcbssb
